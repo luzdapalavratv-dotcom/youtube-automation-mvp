@@ -157,7 +157,7 @@ def analisar_canal_youtube(channel_id: str, top_n: int = 20):
         if not df.empty:
             df["publicado"] = pd.to_datetime(df["publicado"], errors="coerce")
             df = df.sort_values("views", ascending=False)
-            df["ctr_simulado"] = np.random.uniform(5, 18, len(df))
+            df["ctr_simulado"] = np.random.uniform(5, 18, len(df))  # fictício
 
         return {
             "nome": canal_info["snippet"]["title"],
@@ -200,7 +200,6 @@ tab1, tab2 = st.tabs(["🧬 Modelagem do Canal", "📊 Análise via YouTube"])
 with tab1:
     st.subheader("🧬 Configuração detalhada do canal")
 
-    # Se já existe um canal selecionado, carrega dados; caso contrário, cria skeleton
     canal_id = st.session_state.canal_atual_id
     if canal_id and canal_id in db["canais"]:
         canal_data = db["canais"][canal_id]
@@ -291,10 +290,8 @@ with tab1:
         salvar = st.form_submit_button("💾 Salvar configurações do canal")
 
     if salvar:
-        # Se ainda não existe id, cria um novo
         if not canal_id or canal_id not in db["canais"]:
             from uuid import uuid4
-
             canal_id = str(uuid4())[:8]
             st.session_state.canal_atual_id = canal_id
 
@@ -366,9 +363,16 @@ with tab2:
 
         if not df_v.empty:
             st.subheader("🥇 Top 10 vídeos por views")
+
             top10 = df_v.head(10).copy()
+            # adiciona link real de cada vídeo
+            top10["link_video"] = "https://www.youtube.com/watch?v=" + top10["video_id"]  # [web:105]
+            top10["link_md"] = top10["link_video"].apply(
+                lambda url: f"[Abrir vídeo]({url})"
+            )
+
             st.dataframe(
-                top10[["titulo", "views", "likes", "comments", "ctr_simulado"]],
+                top10[["titulo", "views", "likes", "comments", "ctr_simulado", "link_md"]],
                 use_container_width=True,
             )
 
@@ -409,7 +413,6 @@ with tab2:
 
             with col_bt2:
                 if st.session_state.canal_atual_id in db["canais"]:
-                    # Sugere diretrizes de título com base na análise
                     sugestao = (
                         f"- {numeros/n*100:.0f}% dos top vídeos usam NÚMEROS no título.\n"
                         f"- {perguntas/n*100:.0f}% usam PERGUNTAS fortes.\n"
