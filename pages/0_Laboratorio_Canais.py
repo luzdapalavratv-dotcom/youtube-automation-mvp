@@ -1,17 +1,29 @@
 import streamlit as st
 import googleapiclient.discovery
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import numpy as np
 from urllib.parse import urlparse
+from datetime import datetime
 
-st.set_page_config(page_title="0_Laboratório Canais", layout="wide")
-st.title("🔬 Laboratório de Análise de Canais")
+st.set_page_config(page_title="0 – Laboratório de Canais", layout="wide")
+st.title("🔬 Laboratório de Canais (Modelagem + Análise)")
 
 # -------------------------------------------------------------------
-# YouTube API
+# Integra com o "banco" do app principal
+# -------------------------------------------------------------------
+def criar_db_vazio():
+    return {"canais": {}}
+
+if "db" not in st.session_state:
+    st.session_state.db = criar_db_vazio()
+
+db = st.session_state.db
+
+if "canal_atual_id" not in st.session_state:
+    st.session_state.canal_atual_id = None
+
+# -------------------------------------------------------------------
+# YouTube API (para análise opcional)
 # -------------------------------------------------------------------
 @st.cache_resource
 def get_youtube_service():
@@ -22,18 +34,8 @@ def get_youtube_service():
 
 youtube = get_youtube_service()  # [web:20]
 
-# -------------------------------------------------------------------
-# Util: extrair Channel ID a partir de URL
-# -------------------------------------------------------------------
 def extrair_channel_id(url: str):
-    """
-    Aceita links do tipo:
-      - https://www.youtube.com/channel/UCxxxx
-      - https://youtube.com/@handle
-      - https://www.youtube.com/user/username
-      - https://www.youtube.com/c/customname
-    Retorna o channelId resolvido pela API.
-    """
+    """Tenta extrair/resolver um channelId a partir de vários formatos de URL."""
     url = url.strip()
     if not url:
         return None
@@ -45,7 +47,7 @@ def extrair_channel_id(url: str):
     if path.startswith("channel/"):
         return path.split("/")[1]
 
-    # Handle @nome → usar search channels
+    # Handle @nome ou /@nome
     if path.startswith("@"):
         handle = path[1:]
         try:
@@ -53,7 +55,7 @@ def extrair_channel_id(url: str):
                 part="snippet",
                 q=handle,
                 type="channel",
-                maxResults=1
+                maxResults=1,
             )
             res = req.execute()
             items = res.get("items", [])
@@ -62,9 +64,9 @@ def extrair_channel_id(url: str):
         except Exception:
             return None
 
-    # /user/username ou /c/customname → resolver por search
+    # /user/username ou /c/customname
     parts = path.split("/")
-    if parts[0] in ["user", "c"]:
+    if parts and parts[0] in ["user", "c"]:
         username = parts[1] if len(parts) > 1 else ""
         if username:
             try:
@@ -72,7 +74,7 @@ def extrair_channel_id(url: str):
                     part="snippet",
                     q=username,
                     type="channel",
-                    maxResults=1
+                    maxResults=1,
                 )
                 res = req.execute()
                 items = res.get("items", [])
@@ -81,13 +83,13 @@ def extrair_channel_id(url: str):
             except Exception:
                 return None
 
-    # Fallback: tentar search direto pela URL/nome
+    # Fallback: busca geral
     try:
         req = youtube.search().list(
             part="snippet",
             q=url,
             type="channel",
-            maxResults=1
+            maxResults=1,
         )
         res = req.execute()
         items = res.get("items", [])
@@ -98,88 +100,56 @@ def extrair_channel_id(url: str):
 
     return None
 
-# -------------------------------------------------------------------
-# Sidebar
-# -------------------------------------------------------------------
-with st.sidebar:
-    st.header("📺 Selecione o canal para análise")
-
-    st.markdown("**Opção 1 – Escolher canal famoso (rápido):**")
-    canais_famosos = {
-        "MrBeast": "UCX6OQ3DkcsbYNE6H8uQQuVA",
-        "Filipe Deschamps": "UC0OOE4rLzgFX8Fd0iXL1wTg",
-        "Primo Rico": "UCDV9-us_XTkk6j4i1XuWQ0A",
-        "Me Poupe!": "UC8RaTfQBFv_t5E-XSd75_mA",
-        "Nath Finanças": "UC7Z6s5JXHkV4l9YObLOa3-Q",
-        "Alex Becker": "UC9iridQIR8Gv9iF2jIQ4bvw"
-    }
-    canal_famoso = st.selectbox("Canais famosos", list(canais_famosos.keys()))
-
-    st.markdown("---")
-    st.markdown("**Opção 2 – Colar link do canal YouTube:**")
-    canal_url_input = st.text_input(
-        "Cole o link do canal (qualquer formato do YouTube)",
-        placeholder="https://www.youtube.com/@seucanal"
-    )
-
-    top_n = st.slider("Quantidade de vídeos a analisar (Top N)", 5, 50, 20)
-
-# -------------------------------------------------------------------
-# Função principal de análise
-# -------------------------------------------------------------------
 @st.cache_data(ttl=3600)
-def analisar_canal(channel_id: str, top_n: int):
-    """Retorna dict com infos do canal + DataFrame de vídeos."""  # [web:20]
+def analisar_canal_youtube(channel_id: str, top_n: int = 20):
+    """Analisa canal via YouTube Data API: top vídeos, padrões de título etc."""  # [web:20]
     try:
-        channel_req = youtube.channels().list(
+        ch_req = youtube.channels().list(
             part="snippet,statistics",
-            id=channel_id
+            id=channel_id,
         )
-        channel_res = channel_req.execute()
-        items = channel_res.get("items", [])
+        ch_res = ch_req.execute()
+        items = ch_res.get("items", [])
         if not items:
             return None
 
         canal_info = items[0]
 
-        # Buscar vídeos (API não ordena por views, então pega recentes e depois ordena localmente).
         search_req = youtube.search().list(
             part="id,snippet",
             channelId=channel_id,
             maxResults=min(top_n, 50),
             order="date",
-            type="video"
+            type="video",
         )
         search_res = search_req.execute()
-        videos_raw = search_res.get("items", [])
+        vids_raw = search_res.get("items", [])
 
         videos = []
-        ids = [v["id"]["videoId"] for v in videos_raw]
+        ids = [v["id"]["videoId"] for v in vids_raw]
+        stats_map = {}
         if ids:
             stats_req = youtube.videos().list(
                 part="statistics",
-                id=",".join(ids)
+                id=",".join(ids),
             )
             stats_res = stats_req.execute()
             stats_map = {
-                item["id"]: item["statistics"]
-                for item in stats_res.get("items", [])
+                it["id"]: it["statistics"] for it in stats_res.get("items", [])
             }
-        else:
-            stats_map = {}
 
-        for item in videos_raw:
-            vid = item["id"]["videoId"]
-            snip = item["snippet"]
-            s = stats_map.get(vid, {})
+        for v in vids_raw:
+            vid = v["id"]["videoId"]
+            sn = v["snippet"]
+            stt = stats_map.get(vid, {})
             videos.append(
                 {
                     "video_id": vid,
-                    "titulo": snip.get("title", "")[:100],
-                    "publicado": snip.get("publishedAt", ""),
-                    "views": int(s.get("viewCount", 0)),
-                    "likes": int(s.get("likeCount", 0)),
-                    "comments": int(s.get("commentCount", 0)),
+                    "titulo": sn.get("title", "")[:100],
+                    "publicado": sn.get("publishedAt", ""),
+                    "views": int(stt.get("viewCount", 0)),
+                    "likes": int(stt.get("likeCount", 0)),
+                    "comments": int(stt.get("commentCount", 0)),
                 }
             )
 
@@ -187,9 +157,10 @@ def analisar_canal(channel_id: str, top_n: int):
         if not df.empty:
             df["publicado"] = pd.to_datetime(df["publicado"], errors="coerce")
             df = df.sort_values("views", ascending=False)
+            df["ctr_simulado"] = np.random.uniform(5, 18, len(df))
 
         return {
-            "canal": canal_info["snippet"]["title"],
+            "nome": canal_info["snippet"]["title"],
             "subscribers": int(canal_info["statistics"].get("subscriberCount", 0)),
             "total_videos": int(canal_info["statistics"].get("videoCount", 0)),
             "videos": df,
@@ -198,165 +169,266 @@ def analisar_canal(channel_id: str, top_n: int):
         return None
 
 # -------------------------------------------------------------------
-# Escolha do canal efetivo
+# Sidebar – escolher canal já criado no sistema
 # -------------------------------------------------------------------
-st.header("🎯 Análise do Canal Selecionado")
+with st.sidebar:
+    st.header("🎛 Seleção de Canal no Sistema")
 
-canal_escolhido_id = None
-origem = ""
-
-if canal_url_input.strip():
-    canal_escolhido_id = extrair_channel_id(canal_url_input)
-    origem = "URL personalizada"
-else:
-    canal_escolhido_id = canais_famosos[canal_famoso]
-    origem = "lista de famosos"
-
-if not canal_escolhido_id:
-    st.warning("Informe um link de canal válido ou use a lista de canais famosos.")
-else:
-    st.caption(f"Canal selecionado a partir de: **{origem}**")
-
-if st.button("🚀 ANALISAR CANAL", type="primary"):
-    if not canal_escolhido_id:
-        st.error("Não foi possível resolver o Channel ID. Verifique o link do canal.")
-    else:
-        with st.spinner("Analisando canal no YouTube..."):
-            dados = analisar_canal(canal_escolhido_id, top_n)
-            if dados:
-                st.session_state.dados_canal = dados
-            else:
-                st.error("Erro ao obter dados do canal. Verifique se o canal é público.")
-
-# -------------------------------------------------------------------
-# Exibir resultados
-# -------------------------------------------------------------------
-if "dados_canal" in st.session_state:
-    canal_data = st.session_state.dados_canal
-    df_videos = canal_data["videos"]
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("📺 Canal", canal_data["canal"])
-    with col2:
-        st.metric("👥 Inscritos", f"{canal_data['subscribers']:,}")
-    with col3:
-        st.metric("🎬 Total de vídeos", canal_data["total_videos"])
-    with col4:
-        media_views = df_videos["views"].mean() if not df_videos.empty else 0
-        st.metric("📈 Views médios (Top N)", f"{media_views:,.0f}")
-
-    st.header("🥇 Top Vídeos (para modelar títulos)")
-
-    if df_videos.empty:
-        st.info("Este canal não retornou vídeos públicos para análise.")
-    else:
-        top10 = df_videos.head(10).copy()
-        top10["ctr"] = np.random.uniform(5, 18, len(top10))  # CTR simulado
-
-        fig = px.bar(
-            top10,
-            x="views",
-            y="titulo",
-            orientation="h",
-            title="Top 10 vídeos por views",
-            color="views",
-            color_continuous_scale="plasma",
-            hover_data=["likes", "comments"],
+    canais_ids = list(db["canais"].keys())
+    if canais_ids:
+        canais_nomes = [db["canais"][cid]["nome"] for cid in canais_ids]
+        idx_sel = st.selectbox(
+            "Canal atual",
+            options=range(len(canais_ids)),
+            format_func=lambda i: canais_nomes[i],
+            index=0
+            if st.session_state.canal_atual_id not in canais_ids
+            else canais_ids.index(st.session_state.canal_atual_id),
         )
-        fig.update_layout(height=500, yaxis_title="")
-        st.plotly_chart(fig, use_container_width=True)
+        st.session_state.canal_atual_id = canais_ids[idx_sel]
+    else:
+        st.info("Nenhum canal cadastrado ainda (crie no app principal ou aqui).")
 
-        st.subheader("📋 Tabela de templates")
-        df_display = top10[
-            ["titulo", "views", "likes", "comments", "ctr"]
-        ].copy()
-        df_display["formula_thumbnail"] = df_display["titulo"].str.extract(r"(\d+)")
-        df_display["gancho_titulo"] = df_display["titulo"].str[:40]
-        st.dataframe(
-            df_display[["titulo", "views", "ctr", "formula_thumbnail"]],
-            use_container_width=True,
+# -------------------------------------------------------------------
+# Layout principal: duas abas
+# -------------------------------------------------------------------
+tab1, tab2 = st.tabs(["🧬 Modelagem do Canal", "📊 Análise via YouTube"])
+
+# -------------------------------------------------------------------
+# ABA 1 – Modelagem / Configuração do Canal
+# -------------------------------------------------------------------
+with tab1:
+    st.subheader("🧬 Configuração detalhada do canal")
+
+    # Se já existe um canal selecionado, carrega dados; caso contrário, cria skeleton
+    canal_id = st.session_state.canal_atual_id
+    if canal_id and canal_id in db["canais"]:
+        canal_data = db["canais"][canal_id]
+    else:
+        canal_data = {
+            "nome": "",
+            "link_youtube": "",
+            "nicho": "",
+            "persona": "",
+            "idioma": "pt-BR",
+            "frequencia": "",
+            "tipos_video": [],
+            "tom_marca": "",
+            "palavras_proibidas": "",
+            "preferencias_titulo": "",
+            "diretrizes_gerais": "",
+            "criado_em": datetime.now().isoformat(),
+            "videos": {},
+        }
+
+    with st.form("form_canal"):
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            nome = st.text_input("Nome do canal", value=canal_data.get("nome", ""))
+            link = st.text_input(
+                "Link do canal no YouTube (opcional)",
+                value=canal_data.get("link_youtube", ""),
+            )
+            nicho = st.text_input("Nicho principal", value=canal_data.get("nicho", ""))
+            idioma = st.selectbox(
+                "Idioma principal",
+                ["pt-BR", "en-US", "es-ES"],
+                index=["pt-BR", "en-US", "es-ES"].index(
+                    canal_data.get("idioma", "pt-BR")
+                ),
+            )
+
+        with col_a2:
+            persona = st.text_area(
+                "Persona do público-alvo",
+                value=canal_data.get(
+                    "persona",
+                    "Ex.: Adultos de 25-40 anos, buscando renda extra e liberdade financeira.",
+                ),
+                height=80,
+            )
+            frequencia = st.text_input(
+                "Frequência ideal (ex.: 2 vídeos/semana)",
+                value=canal_data.get("frequencia", ""),
+            )
+            tipos_video = st.multiselect(
+                "Tipos de vídeo",
+                ["Longform", "Shorts", "Highlights", "Lives"],
+                default=canal_data.get("tipos_video", ["Longform"]),
+            )
+
+        st.markdown("### 🎙️ Voz e Diretrizes da Marca")
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            tom_marca = st.text_area(
+                "Tom da marca",
+                value=canal_data.get(
+                    "tom_marca",
+                    "Ex.: Direto, motivacional, com humor leve, sem palavrões.",
+                ),
+                height=80,
+            )
+            palavras_proibidas = st.text_area(
+                "Palavras/temas proibidos",
+                value=canal_data.get("palavras_proibidas", ""),
+                height=80,
+            )
+        with col_b2:
+            preferencias_titulo = st.text_area(
+                "Preferências para títulos",
+                value=canal_data.get(
+                    "preferencias_titulo",
+                    "Ex.: Sempre usar números; evitar títulos muito longos; começar com benefício.",
+                ),
+                height=80,
+            )
+            diretrizes_gerais = st.text_area(
+                "Diretrizes gerais (estrutura de vídeos, CTA, etc.)",
+                value=canal_data.get("diretrizes_gerais", ""),
+                height=80,
+            )
+
+        salvar = st.form_submit_button("💾 Salvar configurações do canal")
+
+    if salvar:
+        # Se ainda não existe id, cria um novo
+        if not canal_id or canal_id not in db["canais"]:
+            from uuid import uuid4
+
+            canal_id = str(uuid4())[:8]
+            st.session_state.canal_atual_id = canal_id
+
+        db["canais"][canal_id] = {
+            **db["canais"].get(canal_id, {}),
+            "nome": nome.strip(),
+            "link_youtube": link.strip(),
+            "nicho": nicho.strip(),
+            "idioma": idioma,
+            "persona": persona.strip(),
+            "frequencia": frequencia.strip(),
+            "tipos_video": tipos_video,
+            "tom_marca": tom_marca.strip(),
+            "palavras_proibidas": palavras_proibidas.strip(),
+            "preferencias_titulo": preferencias_titulo.strip(),
+            "diretrizes_gerais": diretrizes_gerais.strip(),
+            "criado_em": canal_data.get("criado_em", datetime.now().isoformat()),
+            "videos": canal_data.get("videos", {}),
+        }
+        st.success("Canal atualizado no sistema!")
+        st.experimental_rerun()
+
+    st.markdown("---")
+    st.caption(
+        "As informações salvas aqui são usadas em todas as outras páginas "
+        "(roteiro, thumbnails, áudio, etc.) para personalizar o conteúdo."
+    )
+
+# -------------------------------------------------------------------
+# ABA 2 – Análise via YouTube (copy de títulos, padrões, etc.)
+# -------------------------------------------------------------------
+with tab2:
+    st.subheader("📊 Análise de um canal real no YouTube")
+
+    col_l1, col_l2 = st.columns([2, 1])
+    with col_l1:
+        link_analise = st.text_input(
+            "Cole o link do canal no YouTube para analisar",
+            value=db["canais"]
+            .get(st.session_state.canal_atual_id, {})
+            .get("link_youtube", ""),
+        )
+    with col_l2:
+        top_n = st.slider("Quantidade de vídeos para analisar", 5, 40, 20)
+
+    if st.button("🔍 Analisar canal no YouTube"):
+        ch_id = extrair_channel_id(link_analise)
+        if not ch_id:
+            st.error("Não foi possível extrair o ID do canal. Verifique o link.")
+        else:
+            with st.spinner("Consultando YouTube Data API..."):
+                analise = analisar_canal_youtube(ch_id, top_n=top_n)
+                if not analise:
+                    st.error("Erro ao consultar dados do canal.")
+                else:
+                    st.session_state.analise_canal_youtube = analise
+                    st.session_state.analise_channel_id = ch_id
+                    st.success("Análise concluída!")
+
+    analise = st.session_state.get("analise_canal_youtube")
+    if analise:
+        df_v = analise["videos"]
+
+        st.markdown(
+            f"### 📺 {analise['nome']}  |  "
+            f"👥 {analise['subscribers']:,} inscritos  |  "
+            f"🎬 {analise['total_videos']} vídeos"
         )
 
-        # -------------------------------------------------------------------
-        # Insights de copy
-        # -------------------------------------------------------------------
-        st.header("🧠 Insights de Copywriting do Canal")
+        if not df_v.empty:
+            st.subheader("🥇 Top 10 vídeos por views")
+            top10 = df_v.head(10).copy()
+            st.dataframe(
+                top10[["titulo", "views", "likes", "comments", "ctr_simulado"]],
+                use_container_width=True,
+            )
 
-        titulos = top10["titulo"].tolist()
-        n = len(titulos)
+            # Padrões de títulos
+            st.subheader("🧠 Padrões de títulos encontrados")
 
-        patterns = {
-            "Números": len([t for t in titulos if any(ch.isdigit() for ch in t)]),
-            "Perguntas": len([t for t in titulos if "?" in t]),
-            "Emojis": len(
+            titulos = top10["titulo"].tolist()
+            n = len(titulos)
+            numeros = len([t for t in titulos if any(ch.isdigit() for ch in t)])
+            perguntas = len([t for t in titulos if "?" in t])
+            emojis = len(
                 [t for t in titulos if any(c in t for c in ["🔥", "💰", "🚀", "😱", "😮"])]
-            ),
-            "Palavras trigger": sum(
+            )
+            palavras_trigger = sum(
                 t.lower().count(word)
                 for t in titulos
                 for word in ["segredo", "milionário", "rápido", "fácil", "nunca", "sempre"]
-            ),
-        }
+            )
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("🔢 % títulos com números", f"{patterns['Números']/n*100:.0f}%")
-            st.metric("❓ % em formato de pergunta", f"{patterns['Perguntas']/n*100:.0f}%")
-        with c2:
-            st.metric("😎 % com emoji", f"{patterns['Emojis']/n*100:.0f}%")
-            st.metric("🎯 Ocorrências de gatilhos", patterns["Palavras trigger"])
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("Títulos com números", f"{numeros/n*100:.0f}%")
+                st.metric("Títulos em forma de pergunta", f"{perguntas/n*100:.0f}%")
+            with c2:
+                st.metric("Títulos com emoji", f"{emojis/n*100:.0f}%")
+                st.metric("Ocorrências de gatilhos", palavras_trigger)
 
-        st.header("🎯 Fórmulas de títulos encontradas")
-        st.markdown(
-            """
-- **NÚMERO + BENEFÍCIO:** `7 Maneiras de [Benefício]`
-- **SEGREDO / REVELAÇÃO:** `O Segredo que [Grupo] Não Quer que Você Saiba`
-- **LISTA:** `Top 5 [Problema] que Você Precisa Conhecer`
-- **PERGUNTA FORTE:** `Você Está Cometendo Este Erro em [Tema]?`
-- **CONTRAPONTO:** `Por Que [Ideia Popular] Está Errada`"""
-        )
+            melhor_titulo = top10.iloc[0]["titulo"]
+            st.success(
+                f"Modelo forte de título detectado, exemplo: `{melhor_titulo[:80]}...`"
+            )
 
-        melhor_titulo = top10.iloc[0]["titulo"]
-        st.success(f"Modelo forte detectado, use como base: `{melhor_titulo[:80]}...`")
+            col_bt1, col_bt2 = st.columns(2)
+            with col_bt1:
+                if st.button("💡 Usar melhor título como template (página 1)"):
+                    st.session_state.titulo_template = melhor_titulo
+                    st.success("Template salvo em session_state.titulo_template")
 
-        if st.button("➡️ Usar esse modelo na página 1 (Roteiro Viral)"):
-            st.session_state.titulo_template = melhor_titulo
-            st.success("Template salvo no session_state.titulo_template")
+            with col_bt2:
+                if st.session_state.canal_atual_id in db["canais"]:
+                    # Sugere diretrizes de título com base na análise
+                    sugestao = (
+                        f"- {numeros/n*100:.0f}% dos top vídeos usam NÚMEROS no título.\n"
+                        f"- {perguntas/n*100:.0f}% usam PERGUNTAS fortes.\n"
+                        f"- {emojis/n*100:.0f}% usam EMOJIS.\n"
+                        "- Priorizar títulos curtos com benefício claro na frente.\n"
+                    )
+                    if st.button("✍️ Gravar essas diretrizes no canal atual"):
+                        canal_cfg = db["canais"][st.session_state.canal_atual_id]
+                        atual = canal_cfg.get("preferencias_titulo", "")
+                        novo = (atual + "\n\n" + sugestao).strip()
+                        canal_cfg["preferencias_titulo"] = novo
+                        st.success("Diretrizes gravadas nas preferências de título do canal.")
+
+        else:
+            st.info("Canal sem vídeos públicos para análise.")
 
     st.markdown("---")
-
-# -------------------------------------------------------------------
-# Benchmarks simples
-# -------------------------------------------------------------------
-st.header("📊 Benchmarks gerais da indústria")
-
-benchmark_data = {
-    "Views média vídeo": "45k",
-    "CTR médio": "8.2%",
-    "Like ratio": "4.2%",
-    "Tempo médio p/ produzir (pipeline)": "18 min",
-    "Custo por vídeo (MVP)": "R$ 0,00",
-}
-
-b1, b2, b3 = st.columns(3)
-with b1:
-    st.metric("👀 Views média", benchmark_data["Views média vídeo"])
-with b2:
-    st.metric("📈 CTR médio", benchmark_data["CTR médio"])
-with b3:
-    st.metric("💰 Custo/vídeo", benchmark_data["Custo por vídeo (MVP)"])
-
-st.markdown(
-    """
----
-**Como usar este laboratório:**
-
-1. Cole o **link de qualquer canal** ou escolha um canal famoso.  
-2. Observe os **títulos e métricas dos Top vídeos**.  
-3. Copie os padrões de números, perguntas e gatilhos.  
-4. Use o botão para enviar um **modelo de título** direto para a página 1 (Roteiro Viral).  
-
-Isso transforma seu MVP em um laboratório de inteligência competitiva para YouTube. 🚀
-"""
-)
+    st.caption(
+        "Use esta aba para copiar estratégias de canais reais e alimentar as "
+        "configurações do seu canal no sistema. O app principal usa essas "
+        "informações para guiar roteiros, thumbnails e outros elementos."
+    )
