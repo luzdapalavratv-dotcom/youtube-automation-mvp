@@ -1,11 +1,9 @@
 import streamlit as st
-from groq import Groq
-import json
-import re
 from datetime import datetime
+import uuid
 
 st.set_page_config(page_title="1 – Roteiro Viral", layout="wide")
-st.title("🎬 1 – Gerador de Roteiro Viral para YouTube")
+st.title("📝 1 – Gerador de Roteiro Viral para YouTube")
 
 # -------------------------------------------------------------------
 # Integra com o "banco" e seleção do monitor
@@ -38,229 +36,269 @@ if not video_id or video_id not in videos:
 video = videos[video_id]
 
 # -------------------------------------------------------------------
-# Cliente Groq
+# Garante estrutura de artefatos
 # -------------------------------------------------------------------
-@st.cache_resource
-def get_groq_client():
-    return Groq(api_key=st.secrets["GROQ_API_KEY"])
-
-client = get_groq_client()
+if "artefatos" not in video:
+    video["artefatos"] = {}
+if "roteiro" not in video["artefatos"] or video["artefatos"]["roteiro"] is None:
+    video["artefatos"]["roteiro"] = {
+        "id": str(uuid.uuid4())[:8],
+        "titulo_video": video.get("titulo", ""),
+        "hook": "",
+        "promessa": "",
+        "estrutura": "",
+        "roteiro": {},
+        "tokens_uso": 0,
+        "modelo_usado": "",
+        "gerado_em": None,
+    }
 
 # -------------------------------------------------------------------
-# Sidebar – contexto do canal/vídeo e modelo
+# Sidebar – contexto e parâmetros de roteiro
 # -------------------------------------------------------------------
 with st.sidebar:
     st.header("📺 Contexto")
-
     st.markdown(f"**Canal:** {canal.get('nome','')}")
+    st.markdown(f"**Nicho:** {canal.get('nicho','')}")
     st.markdown(f"**Vídeo:** {video.get('titulo','')}")
 
     st.markdown("---")
-    st.header("⚙️ Modelo Groq")
+    st.header("🎯 Objetivo do vídeo")
 
-    model = st.selectbox(
-        "Modelo",
+    objetivo = st.selectbox(
+        "Função principal",
         [
-            "llama-3.3-70b-versatile",  # recomendado
-            "llama-3.1-8b-instant",     # mais rápido
+            "Educar (aula, explicação)",
+            "Inspirar (história, testemunho)",
+            "Converter (venda/call to action)",
+            "Entreter (humor, storytelling)",
         ],
         index=0,
     )
 
-    temperatura = st.slider("Temperatura (criatividade)", 0.0, 1.0, 0.7, 0.1)
-
-    nicho = canal.get("nicho", "")
-    nicho = st.text_input("Nicho do canal", value=nicho)
-
-    duracao = st.selectbox("Duração alvo", ["5-8 min", "8-12 min", "12-15 min"], index=1)
-
-    tom_marca = canal.get("tom_marca", "Direto, motivacional, com humor leve.")
-    tom_marca = st.text_area("Tom da marca", value=tom_marca, height=80)
-
-# Campo para template de título vindo do Lab (opcional)
-titulo_template = st.session_state.get("titulo_template", "")
-
-# -------------------------------------------------------------------
-# Função de geração
-# -------------------------------------------------------------------
-def gerar_roteiro_viral(tema, nicho, duracao, tom_marca, titulo_base=""):
-    minutos = duracao.split("-")[0]
-
-    prompt = f"""
-Você é um roteirista profissional de YouTube, especialista em vídeos virais.
-
-Canal:
-- Nicho: {nicho}
-- Tom da marca: {tom_marca}
-
-Vídeo:
-- Título base (opcional, pode melhorar): "{titulo_base or tema}"
-- Tema: {tema}
-- Duração desejada: {minutos} minutos
-
-Objetivo:
-Criar um roteiro COMPLETO e VIRAL para YouTube, estruturado e pronto para gravação.
-
-REQUISITOS DE ESTILO:
-- Linguagem simples, direta, conversacional (como amigo íntimo).
-- Frases curtas (máx. ~15 palavras).
-- Use pausas [PAUSA] e ênfases [ENFASE] quando fizer sentido.
-- Evitar jargões técnicos pesados.
-- Focar em benefício e curiosidade.
-
-ESTRUTURA OBRIGATÓRIA DO ROTEIRO (use exatamente essas chaves):
-
-1_GANCHO: Gancho inicial muito forte (30–45s) com curiosidade/choque/padrão quebrado.
-2_REENGAJAMENTO_1: Reforço de curiosidade + promessa clara + micro-resumo.
-3_PREPARACAO: História, contexto, identificação com o público, criar tensão.
-4_CLIMAX: Entrega principal (segredos/dicas/passos) de forma clara e organizada.
-5_REENGAJAMENTO_2: Novo gancho, prova social, reforço da transformação.
-6_CONCLUSAO_CTA: Resumo rápido + CTAs poderosos (inscrever, like, comentário, próxima ação).
-
-FORMATO DE RESPOSTA (JSON VÁLIDO):
-
-{{
-  "titulo_video": "Título otimizado e chamativo, com até ~70 caracteres",
-  "descricao": "Primeiras linhas da descrição do vídeo otimizadas para clique",
-  "tags": ["tag1", "tag2", "tag3"],
-  "roteiro": {{
-    "1_GANCHO": "texto do gancho...",
-    "2_REENGAJAMENTO_1": "texto...",
-    "3_PREPARACAO": "texto...",
-    "4_CLIMAX": "texto...",
-    "5_REENGAJAMENTO_2": "texto...",
-    "6_CONCLUSAO_CTA": "texto..."
-  }}
-}}
-"""
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperatura,
-            max_tokens=4096,
-        )
-        conteudo = resp.choices[0].message.content.strip()
-
-        # Tentar parsear JSON diretamente
-        try:
-            return json.loads(conteudo)
-        except Exception:
-            m = re.search(r"\{.*\}", conteudo, re.DOTALL)
-            if m:
-                return json.loads(m.group())
-            return {"erro": "Falha ao converter resposta em JSON", "raw": conteudo}
-    except Exception as e:
-        return {"erro": str(e)}
-
-# -------------------------------------------------------------------
-# UI principal
-# -------------------------------------------------------------------
-st.subheader("📝 Configuração do vídeo")
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    tema = st.text_area(
-        "Tema / ideia central do vídeo",
-        value=video.get("titulo", ""),
-        height=80,
-        placeholder="Ex.: 7 segredos da renda passiva que ninguém conta",
+    duracao = st.selectbox(
+        "Duração desejada",
+        [
+            "Curto (3-5 min)",
+            "Médio (6-10 min)",
+            "Longo (11-20 min)",
+        ],
+        index=1,
     )
 
-with col2:
-    if titulo_template:
-        st.markdown("**Template sugerido do Lab de Canais:**")
-        st.code(titulo_template, language="text")
-    else:
-        st.caption("Nenhum template salvo ainda no Laboratório de Canais.")
+    persona = canal.get("persona", "")
+    if not persona:
+        persona = "Adultos interessados no tema do canal, nível iniciante/intermediário."
 
-if "roteiro_gerado" not in st.session_state:
-    st.session_state.roteiro_gerado = None
+    st.markdown("---")
+    st.header("🧑‍💻 Persona do público")
+    persona_custom = st.text_area(
+        "Quem deve assistir este vídeo?",
+        value=persona,
+        height=120,
+    )
+
+    st.markdown("---")
+    st.header("🗣 Tom e voz da marca")
+
+    tom_marca = canal.get(
+        "tom_marca",
+        "Direto, didático, com exemplos simples, evitando linguagem técnica em excesso.",
+    )
+    tom_custom = st.text_area(
+        "Como o roteiro deve soar?",
+        value=tom_marca,
+        height=100,
+    )
+
+    st.markdown("---")
+    st.header("⚠️ Restrições")
+    proibidas = canal.get("palavras_proibidas", "")
+    restricoes = st.text_area(
+        "Palavras / temas a evitar",
+        value=proibidas,
+        height=80,
+    )
+
+# -------------------------------------------------------------------
+# Modelo de IA (placeholder – aqui você pluga Groq / outro LLM)
+# -------------------------------------------------------------------
+def chamar_modelo_roteiro(prompt: str):
+    """
+    Esta função é um placeholder.
+    Aqui você conecta a API do Groq, OpenAI, etc.
+    Para fins de desenvolvimento, vamos só devolver um texto fake estruturado.
+    """
+
+    # Exemplo simples de retorno estruturado:
+    texto = {
+        "hook": "Você já se perguntou por que tantos canais não conseguem crescer mesmo postando todos os dias?",
+        "promessa": "Neste vídeo, você vai entender um modelo simples para transformar qualquer ideia em um roteiro que realmente prende a atenção.",
+        "estrutura": "Introdução rápida, explicação em 3 blocos, exemplo prático e chamada para ação no final.",
+        "roteiro": {
+            "Abertura": "Apresentação rápida + frase de impacto relacionada ao problema do público.",
+            "Bloco 1 – Problema": "Mostrar o erro mais comum que as pessoas cometem.",
+            "Bloco 2 – Solução": "Explicar o modelo ou passo a passo principal.",
+            "Bloco 3 – Exemplo": "Aplicar o modelo a um caso prático.",
+            "Encerramento": "Resumo + CTA clara (inscrever, comentar, próxima etapa).",
+        },
+    }
+    return texto
+
+# -------------------------------------------------------------------
+# Área principal – edição do título e briefing
+# -------------------------------------------------------------------
+st.subheader("🎬 Título e briefing do vídeo")
+
+col_t1, col_t2 = st.columns([2, 1])
+with col_t1:
+    titulo_video = st.text_input(
+        "Título do vídeo (visão inicial)",
+        value=video.get("titulo", video["artefatos"]["roteiro"].get("titulo_video", "")),
+    )
+with col_t2:
+    dur_estimada = st.selectbox(
+        "Estimativa de duração",
+        ["5-7 min", "8-12 min", "13-20 min"],
+        index=1,
+    )
+
+briefing = st.text_area(
+    "Briefing adicional (opcional)",
+    value=video.get("descricao", ""),
+    height=120,
+    help="Use para explicar o contexto específico, testemunho, produtos, história real, etc.",
+)
+
+# -------------------------------------------------------------------
+# Geração do roteiro
+# -------------------------------------------------------------------
+st.subheader("⚙️ Geração do roteiro com IA")
 
 col_bt1, col_bt2 = st.columns(2)
-with col_bt1:
-    if st.button("🚀 Gerar Roteiro Viral", type="primary"):
-        if not tema.strip():
-            st.warning("Informe pelo menos o tema do vídeo.")
-        else:
-            with st.spinner("Gerando roteiro com IA (Groq)..."):
-                resultado = gerar_roteiro_viral(
-                    tema=tema,
-                    nicho=nicho,
-                    duracao=duracao,
-                    tom_marca=tom_marca,
-                    titulo_base=video.get("titulo", "") or titulo_template,
-                )
-                st.session_state.roteiro_gerado = resultado
 
-                # Se deu certo, salvar no "banco" do vídeo e marcar etapa 1 como concluída
-                if resultado and "erro" not in resultado:
-                    video["artefatos"]["roteiro"] = resultado
-                    video["status"]["1_roteiro"] = True
-                    video["ultima_atualizacao"] = datetime.now().isoformat()
-                st.experimental_rerun()
+with col_bt1:
+    if st.button("🚀 Gerar / regenerar roteiro completo", type="primary"):
+        if not titulo_video.strip():
+            st.warning("Informe ao menos um título para o vídeo.")
+        else:
+            with st.spinner("Gerando roteiro com IA..."):
+                # Monta o prompt (poderia ser bem mais sofisticado)
+                prompt = f"""
+Você é um roteirista profissional de vídeos para YouTube.
+
+Canal: {canal.get('nome','')}
+Nicho: {canal.get('nicho','')}
+Objetivo do vídeo: {objetivo}
+Duração desejada: {duracao} ({dur_estimada})
+Persona: {persona_custom}
+Tom da marca: {tom_custom}
+Restrições: {restricoes}
+
+Título provisório: {titulo_video}
+
+Briefing adicional:
+{briefing}
+
+Entregue:
+- Um hook forte para os primeiros 10 segundos.
+- Uma promessa clara do que a pessoa ganha assistindo.
+- Uma descrição textual da estrutura do vídeo.
+- Um roteiro dividido em seções nomeadas, com o texto de cada parte.
+"""
+                resultado = chamar_modelo_roteiro(prompt)
+
+                # Atualiza artefatos
+                video["artefatos"]["roteiro"] = {
+                    "id": video["artefatos"]["roteiro"].get("id", str(uuid.uuid4())[:8]),
+                    "titulo_video": titulo_video.strip(),
+                    "hook": resultado.get("hook", ""),
+                    "promessa": resultado.get("promessa", ""),
+                    "estrutura": resultado.get("estrutura", ""),
+                    "roteiro": resultado.get("roteiro", {}),
+                    "tokens_uso": resultado.get("tokens", 0),
+                    "modelo_usado": resultado.get("modelo", "mock-local"),
+                    "gerado_em": datetime.now().isoformat(),
+                }
+                video["status"]["1_roteiro"] = True
+                video["ultima_atualizacao"] = datetime.now().isoformat()
+                st.success("Roteiro gerado e salvo para este vídeo.")
+                st.rerun()
 
 with col_bt2:
     if st.button("🗑 Limpar roteiro atual"):
-        st.session_state.roteiro_gerado = None
-        video["artefatos"]["roteiro"] = None
+        video["artefatos"]["roteiro"] = {
+            "id": str(uuid.uuid4())[:8],
+            "titulo_video": titulo_video.strip(),
+            "hook": "",
+            "promessa": "",
+            "estrutura": "",
+            "roteiro": {},
+            "tokens_uso": 0,
+            "modelo_usado": "",
+            "gerado_em": None,
+        }
         video["status"]["1_roteiro"] = False
         video["ultima_atualizacao"] = datetime.now().isoformat()
-        st.experimental_rerun()
-
-# Se já há roteiro salvo no vídeo, carregar em memória
-if not st.session_state.roteiro_gerado and video.get("artefatos", {}).get("roteiro"):
-    st.session_state.roteiro_gerado = video["artefatos"]["roteiro"]
-
-roteiro = st.session_state.roteiro_gerado
+        st.success("Roteiro limpo para este vídeo.")
+        st.rerun()
 
 st.markdown("---")
 
 # -------------------------------------------------------------------
-# Exibição do roteiro
+# Exibição / edição do roteiro salvo
 # -------------------------------------------------------------------
-st.subheader("📄 Roteiro gerado")
+dados = video["artefatos"]["roteiro"]
 
-if roteiro and "erro" not in roteiro:
-    titulo_final = roteiro.get("titulo_video", video.get("titulo", ""))
-    descricao = roteiro.get("descricao", "")
-    tags = roteiro.get("tags", [])
-    partes = roteiro.get("roteiro", {})
+st.subheader("📌 Resumo do roteiro")
 
-    c_t1, c_t2 = st.columns([2, 1])
-    with c_t1:
-        st.markdown(f"### 🎥 {titulo_final}")
-        st.caption(descricao)
-    with c_t2:
-        texto_download = f"Título: {titulo_final}\n\nDescrição:\n{descricao}\n\nRoteiro:\n\n"
-        for secao, texto in partes.items():
-            texto_download += f"{secao}\n{texto}\n\n"
-        st.download_button(
-            "💾 Baixar roteiro (.txt)",
-            data=texto_download,
-            file_name="roteiro_youtube.txt",
-            mime="text/plain",
+col_r1, col_r2, col_r3 = st.columns(3)
+with col_r1:
+    st.markdown("**Hook (abertura forte)**")
+    st.write(dados.get("hook", "") or "_Ainda não definido._")
+with col_r2:
+    st.markdown("**Promessa do vídeo**")
+    st.write(dados.get("promessa", "") or "_Ainda não definida._")
+with col_r3:
+    st.markdown("**Estrutura geral**")
+    st.write(dados.get("estrutura", "") or "_Ainda não definida._")
+
+st.markdown("---")
+st.subheader("🧩 Seções do roteiro")
+
+roteiro_secoes = dados.get("roteiro", {})
+
+if not roteiro_secoes:
+    st.info("Nenhuma seção de roteiro registrada ainda. Gere um roteiro ou escreva manualmente abaixo.")
+    roteiro_secoes = {}
+
+# Editor simples de seções
+sec_nomes = list(roteiro_secoes.keys()) or ["Introdução", "Desenvolvimento", "Conclusão"]
+
+tabs = st.tabs(sec_nomes)
+
+for nome, tab in zip(sec_nomes, tabs):
+    with tab:
+        texto_secao = st.text_area(
+            f"Texto da seção: {nome}",
+            value=roteiro_secoes.get(nome, ""),
+            height=220,
+            key=f"secao_{nome}",
         )
+        roteiro_secoes[nome] = texto_secao
 
-    st.markdown("#### Estrutura do roteiro")
-    for i, (secao, texto) in enumerate(partes.items(), start=1):
-        with st.expander(f"{secao}", expanded=(i == 1)):
-            st.markdown(texto)
-
-    if tags:
-        st.subheader("🏷 Tags sugeridas")
-        st.code(", ".join(tags), language="text")
-elif roteiro and "erro" in roteiro:
-    st.error(f"❌ Erro ao gerar roteiro: {roteiro['erro']}")
-    if "model_decommissioned" in roteiro["erro"]:
-        st.info("O modelo foi descontinuado. Selecione outro modelo na barra lateral.")
-else:
-    st.info("Nenhum roteiro gerado ainda para este vídeo. Preencha o tema e clique em **Gerar Roteiro Viral**.")
+if st.button("💾 Salvar alterações nas seções"):
+    video["artefatos"]["roteiro"]["roteiro"] = roteiro_secoes
+    video["artefatos"]["roteiro"]["titulo_video"] = titulo_video.strip()
+    video["artefatos"]["roteiro"]["gerado_em"] = (
+        video["artefatos"]["roteiro"]["gerado_em"] or datetime.now().isoformat()
+    )
+    video["status"]["1_roteiro"] = True
+    video["ultima_atualizacao"] = datetime.now().isoformat()
+    st.success("Roteiro atualizado para este vídeo.")
 
 st.markdown("---")
 st.caption(
-    "Após finalizar o roteiro, volte ao **Monitor de Produção** para acompanhar "
-    "as próximas etapas (Thumbnails, Áudio, Vídeo, Publicação)."
+    "Depois de estar satisfeito com o roteiro, siga para a página **2 – Thumbnails** "
+    "para gerar as imagens de capa baseadas neste conteúdo."
 )
