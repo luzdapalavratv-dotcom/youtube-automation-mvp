@@ -35,7 +35,7 @@ def get_youtube_service():
 youtube = get_youtube_service()  # [web:20]
 
 def extrair_channel_id(url: str):
-    """Tenta extrair/resolver um channelId a partir de vários formatos de URL."""
+    """Tenta extrair/resolver um channelId a partir de vários formatos de URL, usando forHandle quando possível."""  # [web:119][web:124][web:126]
     url = url.strip()
     if not url:
         return None
@@ -47,10 +47,20 @@ def extrair_channel_id(url: str):
     if path.startswith("channel/"):
         return path.split("/")[1]
 
-    # Handle @nome ou /@nome
+    # Handle @nome ou /@nome – usar channels().list(forHandle=...) para ser exato
     if path.startswith("@"):
         handle = path[1:]
         try:
+            ch_req = youtube.channels().list(
+                part="id",
+                forHandle=handle,  # resolve exatamente o handle
+            )
+            ch_res = ch_req.execute()
+            items = ch_res.get("items", [])
+            if items:
+                return items[0]["id"]
+
+            # Fallback: search se, por algum motivo, forHandle não retornar
             req = youtube.search().list(
                 part="snippet",
                 q=handle,
@@ -365,14 +375,15 @@ with tab2:
             st.subheader("🥇 Top 10 vídeos por views")
 
             top10 = df_v.head(10).copy()
-            # adiciona link real de cada vídeo
+            # URL real de cada vídeo
             top10["link_video"] = "https://www.youtube.com/watch?v=" + top10["video_id"]  # [web:105]
-            top10["link_md"] = top10["link_video"].apply(
-                lambda url: f"[Abrir vídeo]({url})"
+            # Coluna compacta com ícone de player como hyperlink
+            top10["▶️"] = top10["link_video"].apply(
+                lambda url: f"[▶️]({url})"
             )
 
             st.dataframe(
-                top10[["titulo", "views", "likes", "comments", "ctr_simulado", "link_md"]],
+                top10[["▶️", "titulo", "views", "likes", "comments", "ctr_simulado"]],
                 use_container_width=True,
             )
 
