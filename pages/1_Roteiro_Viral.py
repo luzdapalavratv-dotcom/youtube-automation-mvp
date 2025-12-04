@@ -1,9 +1,13 @@
-import streamlit as st
-from datetime import datetime
+import os
+import json
 import uuid
+from datetime import datetime
+
+import streamlit as st
+from groq import Groq  # biblioteca oficial da Groq [web:166][web:169]
 
 st.set_page_config(page_title="1 – Roteiro Viral", layout="wide")
-st.title("📝 1 – Gerador de Roteiro Viral para YouTube")
+st.title("📝 1 – Gerador de Roteiro Viral para YouTube (Groq)")
 
 # -------------------------------------------------------------------
 # Integra com o "banco" e seleção do monitor
@@ -36,7 +40,7 @@ if not video_id or video_id not in videos:
 video = videos[video_id]
 
 # -------------------------------------------------------------------
-# Garante estrutura de artefatos
+# Garante estrutura de artefatos de roteiro
 # -------------------------------------------------------------------
 if "artefatos" not in video:
     video["artefatos"] = {}
@@ -52,6 +56,20 @@ if "roteiro" not in video["artefatos"] or video["artefatos"]["roteiro"] is None:
         "modelo_usado": "",
         "gerado_em": None,
     }
+
+# -------------------------------------------------------------------
+# Cliente Groq
+# -------------------------------------------------------------------
+def get_groq_client():
+    api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        st.error("GROQ_API_KEY não encontrado em st.secrets ou variáveis de ambiente.")
+        st.stop()
+    return Groq(api_key=api_key)
+
+groq_client = get_groq_client()  # [web:169][web:180]
+
+MODELO_GROQ = "llama-3.3-70b-versatile"  # modelo recomendado para texto longo [web:181]
 
 # -------------------------------------------------------------------
 # Sidebar – contexto e parâmetros de roteiro
@@ -86,15 +104,35 @@ with st.sidebar:
         index=1,
     )
 
-    persona = canal.get("persona", "")
-    if not persona:
-        persona = "Adultos interessados no tema do canal, nível iniciante/intermediário."
+    st.markdown("---")
+    st.header("🧠 Tom dramático")
+
+    nivel_emocao = st.select_slider(
+        "Nível de emoção na narrativa",
+        options=["Baixo", "Médio", "Alto"],
+        value="Médio",
+    )
+
+    tipo_roteiro = st.selectbox(
+        "Tipo de roteiro",
+        [
+            "Aula passo a passo",
+            "História emocional",
+            "Lista de dicas",
+            "Estudo bíblico estruturado",
+        ],
+        index=0,
+    )
+
+    persona_canal = canal.get("persona", "")
+    if not persona_canal:
+        persona_canal = "Adultos interessados no tema do canal, nível iniciante/intermediário."
 
     st.markdown("---")
     st.header("🧑‍💻 Persona do público")
     persona_custom = st.text_area(
         "Quem deve assistir este vídeo?",
-        value=persona,
+        value=persona_canal,
         height=120,
     )
 
@@ -103,7 +141,7 @@ with st.sidebar:
 
     tom_marca = canal.get(
         "tom_marca",
-        "Direto, didático, com exemplos simples, evitando linguagem técnica em excesso.",
+        "Direto, didático, com exemplos simples, sem jargões difíceis.",
     )
     tom_custom = st.text_area(
         "Como o roteiro deve soar?",
@@ -121,29 +159,123 @@ with st.sidebar:
     )
 
 # -------------------------------------------------------------------
-# Modelo de IA (placeholder – aqui você pluga Groq / outro LLM)
+# Função de chamada ao Groq (JSON mode)
 # -------------------------------------------------------------------
-def chamar_modelo_roteiro(prompt: str):
+def chamar_modelo_roteiro_groq(
+    titulo_video: str,
+    briefing: str,
+    objetivo: str,
+    duracao: str,
+    duracao_estimada: str,
+    persona: str,
+    tom: str,
+    restricoes: str,
+    nivel_emocao: str,
+    tipo_roteiro: str,
+    canal_nome: str,
+    canal_nicho: str,
+):
     """
-    Esta função é um placeholder.
-    Aqui você conecta a API do Groq, OpenAI, etc.
-    Para fins de desenvolvimento, vamos só devolver um texto fake estruturado.
-    """
+    Usa Groq (llama-3.3-70b-versatile) para gerar roteiro em JSON com:
+    hook, promessa, estrutura e dict de seções.
+    """  # [web:169][web:181]
 
-    # Exemplo simples de retorno estruturado:
-    texto = {
-        "hook": "Você já se perguntou por que tantos canais não conseguem crescer mesmo postando todos os dias?",
-        "promessa": "Neste vídeo, você vai entender um modelo simples para transformar qualquer ideia em um roteiro que realmente prende a atenção.",
-        "estrutura": "Introdução rápida, explicação em 3 blocos, exemplo prático e chamada para ação no final.",
-        "roteiro": {
-            "Abertura": "Apresentação rápida + frase de impacto relacionada ao problema do público.",
-            "Bloco 1 – Problema": "Mostrar o erro mais comum que as pessoas cometem.",
-            "Bloco 2 – Solução": "Explicar o modelo ou passo a passo principal.",
-            "Bloco 3 – Exemplo": "Aplicar o modelo a um caso prático.",
-            "Encerramento": "Resumo + CTA clara (inscrever, comentar, próxima etapa).",
-        },
+    sistema = (
+        "Você é um roteirista profissional de vídeos para YouTube, especialista em "
+        "roteiros envolventes otimizados para retenção, watch time e clareza didática. "
+        "Sempre responde em JSON válido, sem comentários, sem texto fora do JSON."
+    )
+
+    # Prompt inspirado nas regras detalhadas do app Gemini (adaptado) [file:161]
+    usuario = f"""
+Contexto do canal:
+- Nome do canal: {canal_nome}
+- Nicho do canal: {canal_nicho}
+- Persona do público: {persona}
+- Tom de voz da marca: {tom}
+- Palavras/temas proibidos (não use nem faça apologia): {restricoes or "nenhuma informada"}
+
+Briefing do vídeo:
+- Objetivo principal do vídeo: {objetivo}
+- Tipo de roteiro: {tipo_roteiro}
+- Nível de emoção desejado: {nivel_emocao}
+- Duração desejada (macro): {duracao}
+- Estimativa de duração para TTS: {duracao_estimada}
+- Título provisório do vídeo: {titulo_video}
+- Briefing adicional detalhado (situação, gancho, contexto): {briefing or "nenhum briefing extra"}
+
+Tarefa:
+Crie um roteiro COMPLETO e ORIGINAL para este vídeo de YouTube, fortemente alinhado ao nicho do canal e ao título.
+
+Formato OBRIGATÓRIO da resposta:
+Responda apenas com um JSON válido, no seguinte formato (sem comentários):
+
+{{
+  "hook": "frase inicial muito forte para os primeiros 5-10 segundos, em 1-2 frases.",
+  "promessa": "explicação clara do que a pessoa vai ganhar assistindo até o final.",
+  "estrutura": "descrição textual em 2-4 frases da jornada do vídeo.",
+  "roteiro": {{
+    "Abertura": "texto corrido da introdução, escrito para ser narrado em voz alta.",
+    "Bloco 1": "texto corrido com o primeiro bloco de conteúdo.",
+    "Bloco 2": "texto corrido com exemplos/aplicações.",
+    "Bloco 3": "opcional: aprofundamento, perguntas retóricas, conexões emocionais.",
+    "Encerramento": "resumo, CTA (inscrever-se, comentar, próxima etapa) e fechamento emocional."
+  }}
+}}
+
+Regras importantes para o conteúdo do campo "roteiro":
+1. Escreva tudo em português brasileiro natural, na segunda pessoa (você).
+2. Sem listas, sem marcadores, sem Markdown, sem títulos de blocos na saída final (apenas texto corrido em cada campo).
+3. Evite repetir literalmente o título do vídeo muitas vezes; use variações naturais.
+4. Use perguntas retóricas, exemplos concretos e pequenas metáforas quando ajudarem a clareza.
+5. Adapte vocabulário, referências e densidade de explicação ao nicho e à persona do canal.
+6. Se o tipo de roteiro for "História emocional", estruture como storytelling com personagem, conflito e resolução.
+7. Se for "Estudo bíblico estruturado", cite referências de forma respeitosa, mas sem escrever versículos inteiros.
+"""
+
+    resposta = groq_client.chat.completions.create(
+        model=MODELO_GROQ,
+        messages=[
+            {"role": "system", "content": sistema},
+            {"role": "user", "content": usuario},
+        ],
+        temperature=0.6,
+        max_tokens=4096,
+    )
+
+    conteudo = resposta.choices[0].message.content
+    tokens_total = getattr(resposta.usage, "total_tokens", 0)
+
+    # Tenta extrair JSON puro, mesmo que venha com texto antes/depois
+    inicio = conteudo.find("{")
+    fim = conteudo.rfind("}")
+    if inicio == -1 or fim == -1:
+        raise ValueError("A resposta do modelo não contém JSON válido.")
+    json_str = conteudo[inicio : fim + 1]
+
+    data = json.loads(json_str)
+
+    # Normaliza campos esperados
+    hook = data.get("hook", "").strip()
+    promessa = data.get("promessa", "").strip()
+    estrutura = data.get("estrutura", "").strip()
+    roteiro = data.get("roteiro", {})
+
+    if not isinstance(roteiro, dict):
+        raise ValueError("Campo 'roteiro' não é um objeto JSON.")
+
+    roteiro_norm = {}
+    for nome_secao, texto in roteiro.items():
+        roteiro_norm[str(nome_secao)] = str(texto).strip()
+
+    return {
+        "hook": hook,
+        "promessa": promessa,
+        "estrutura": estrutura,
+        "roteiro": roteiro_norm,
+        "tokens": tokens_total,
+        "modelo": MODELO_GROQ,
     }
-    return texto
 
 # -------------------------------------------------------------------
 # Área principal – edição do título e briefing
@@ -158,7 +290,7 @@ with col_t1:
     )
 with col_t2:
     dur_estimada = st.selectbox(
-        "Estimativa de duração",
+        "Estimativa de duração (usada como referência para TTS)",
         ["5-7 min", "8-12 min", "13-20 min"],
         index=1,
     )
@@ -167,13 +299,13 @@ briefing = st.text_area(
     "Briefing adicional (opcional)",
     value=video.get("descricao", ""),
     height=120,
-    help="Use para explicar o contexto específico, testemunho, produtos, história real, etc.",
+    help="Use para explicar o contexto específico, passagem bíblica, exemplo real, oferta, etc.",
 )
 
 # -------------------------------------------------------------------
-# Geração do roteiro
+# Geração do roteiro com Groq
 # -------------------------------------------------------------------
-st.subheader("⚙️ Geração do roteiro com IA")
+st.subheader("⚙️ Geração do roteiro com IA (Groq)")
 
 col_bt1, col_bt2 = st.columns(2)
 
@@ -182,48 +314,45 @@ with col_bt1:
         if not titulo_video.strip():
             st.warning("Informe ao menos um título para o vídeo.")
         else:
-            with st.spinner("Gerando roteiro com IA..."):
-                # Monta o prompt (poderia ser bem mais sofisticado)
-                prompt = f"""
-Você é um roteirista profissional de vídeos para YouTube.
+            # Confirmação leve se já existe roteiro
+            if video["artefatos"]["roteiro"].get("roteiro"):
+                st.info("Um roteiro já existe. O novo irá substituir o atual.")
+            with st.spinner("Gerando roteiro com a IA da Groq..."):
+                try:
+                    resultado = chamar_modelo_roteiro_groq(
+                        titulo_video=titulo_video.strip(),
+                        briefing=briefing,
+                        objetivo=objetivo,
+                        duracao=duracao,
+                        duracao_estimada=dur_estimada,
+                        persona=persona_custom,
+                        tom=tom_custom,
+                        restricoes=restricoes,
+                        nivel_emocao=nivel_emocao,
+                        tipo_roteiro=tipo_roteiro,
+                        canal_nome=canal.get("nome", ""),
+                        canal_nicho=canal.get("nicho", ""),
+                    )
 
-Canal: {canal.get('nome','')}
-Nicho: {canal.get('nicho','')}
-Objetivo do vídeo: {objetivo}
-Duração desejada: {duracao} ({dur_estimada})
-Persona: {persona_custom}
-Tom da marca: {tom_custom}
-Restrições: {restricoes}
-
-Título provisório: {titulo_video}
-
-Briefing adicional:
-{briefing}
-
-Entregue:
-- Um hook forte para os primeiros 10 segundos.
-- Uma promessa clara do que a pessoa ganha assistindo.
-- Uma descrição textual da estrutura do vídeo.
-- Um roteiro dividido em seções nomeadas, com o texto de cada parte.
-"""
-                resultado = chamar_modelo_roteiro(prompt)
-
-                # Atualiza artefatos
-                video["artefatos"]["roteiro"] = {
-                    "id": video["artefatos"]["roteiro"].get("id", str(uuid.uuid4())[:8]),
-                    "titulo_video": titulo_video.strip(),
-                    "hook": resultado.get("hook", ""),
-                    "promessa": resultado.get("promessa", ""),
-                    "estrutura": resultado.get("estrutura", ""),
-                    "roteiro": resultado.get("roteiro", {}),
-                    "tokens_uso": resultado.get("tokens", 0),
-                    "modelo_usado": resultado.get("modelo", "mock-local"),
-                    "gerado_em": datetime.now().isoformat(),
-                }
-                video["status"]["1_roteiro"] = True
-                video["ultima_atualizacao"] = datetime.now().isoformat()
-                st.success("Roteiro gerado e salvo para este vídeo.")
-                st.rerun()
+                    video["artefatos"]["roteiro"] = {
+                        "id": video["artefatos"]["roteiro"].get(
+                            "id", str(uuid.uuid4())[:8]
+                        ),
+                        "titulo_video": titulo_video.strip(),
+                        "hook": resultado.get("hook", ""),
+                        "promessa": resultado.get("promessa", ""),
+                        "estrutura": resultado.get("estrutura", ""),
+                        "roteiro": resultado.get("roteiro", {}),
+                        "tokens_uso": resultado.get("tokens", 0),
+                        "modelo_usado": resultado.get("modelo", MODELO_GROQ),
+                        "gerado_em": datetime.now().isoformat(),
+                    }
+                    video["status"]["1_roteiro"] = True
+                    video["ultima_atualizacao"] = datetime.now().isoformat()
+                    st.success("Roteiro gerado com sucesso pela Groq e salvo para este vídeo.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao chamar a IA da Groq: {e}")
 
 with col_bt2:
     if st.button("🗑 Limpar roteiro atual"):
@@ -263,18 +392,35 @@ with col_r3:
     st.markdown("**Estrutura geral**")
     st.write(dados.get("estrutura", "") or "_Ainda não definida._")
 
+meta = {
+    "Modelo": dados.get("modelo_usado") or "-",
+    "Tokens (aprox.)": dados.get("tokens_uso") or 0,
+    "Gerado em": (dados.get("gerado_em") or "")[:16],
+}
+st.caption(
+    f"Modelo: {meta['Modelo']} · Tokens: {meta['Tokens (aprox.)']} · Gerado em: {meta['Gerado em']}"
+)
+
 st.markdown("---")
 st.subheader("🧩 Seções do roteiro")
 
-roteiro_secoes = dados.get("roteiro", {})
+roteiro_secoes = dados.get("roteiro", {}) or {}
 
 if not roteiro_secoes:
-    st.info("Nenhuma seção de roteiro registrada ainda. Gere um roteiro ou escreva manualmente abaixo.")
-    roteiro_secoes = {}
+    st.info(
+        "Nenhuma seção de roteiro registrada ainda. Gere um roteiro com a IA da Groq "
+        "ou escreva manualmente abaixo."
+    )
+    # Cria seções padrão para facilitar edição manual
+    roteiro_secoes = {
+        "Abertura": "",
+        "Bloco 1": "",
+        "Bloco 2": "",
+        "Bloco 3": "",
+        "Encerramento": "",
+    }
 
-# Editor simples de seções
-sec_nomes = list(roteiro_secoes.keys()) or ["Introdução", "Desenvolvimento", "Conclusão"]
-
+sec_nomes = list(roteiro_secoes.keys())
 tabs = st.tabs(sec_nomes)
 
 for nome, tab in zip(sec_nomes, tabs):
@@ -290,15 +436,14 @@ for nome, tab in zip(sec_nomes, tabs):
 if st.button("💾 Salvar alterações nas seções"):
     video["artefatos"]["roteiro"]["roteiro"] = roteiro_secoes
     video["artefatos"]["roteiro"]["titulo_video"] = titulo_video.strip()
-    video["artefatos"]["roteiro"]["gerado_em"] = (
-        video["artefatos"]["roteiro"]["gerado_em"] or datetime.now().isoformat()
-    )
+    if not video["artefatos"]["roteiro"].get("gerado_em"):
+        video["artefatos"]["roteiro"]["gerado_em"] = datetime.now().isoformat()
     video["status"]["1_roteiro"] = True
     video["ultima_atualizacao"] = datetime.now().isoformat()
     st.success("Roteiro atualizado para este vídeo.")
 
 st.markdown("---")
 st.caption(
-    "Depois de estar satisfeito com o roteiro, siga para a página **2 – Thumbnails** "
-    "para gerar as imagens de capa baseadas neste conteúdo."
+    "Após finalizar o roteiro com a IA da Groq e eventuais ajustes manuais, "
+    "vá para **2 – Thumbnails** para criar as capas com base neste conteúdo."
 )
