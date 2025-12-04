@@ -1,33 +1,381 @@
 import streamlit as st
+import uuid
+from datetime import datetime
+import pandas as pd
 
-st.set_page_config(
-    page_title="YouTube Automation MVP",
-    page_icon="🚀",
-    layout="wide"
-)
+st.set_page_config(page_title="YouTube Automation MVP – Monitor", layout="wide")
+st.title("📺 Monitor de Produção de Vídeos (Pipeline YouTube)")
 
-st.title("🚀 **YouTube Automation MVP**")
-st.markdown("**Sistema completo: Estratégia → Vídeo → YouTube**")
+# -------------------------------------------------------------------
+# Inicialização do "banco" em sessão
+# -------------------------------------------------------------------
+def criar_db_vazio():
+    return {
+        "canais": {}  # canal_id -> {nome, link_youtube, nicho, persona, idioma, videos{...}}
+    }
 
-# Verificação APIs
-groq_key = st.secrets.get("GROQ_API_KEY", None)
-yt_key = st.secrets.get("YOUTUBE_API_KEY", None)
+if "db" not in st.session_state:
+    st.session_state.db = criar_db_vazio()
 
-if not groq_key:
-    st.error("❌ 1.1 GROQ_API_KEY faltando em Secrets!")
-elif not yt_key:
-    st.warning("⚠️ 1.2 YOUTUBE_API_KEY faltando (nicho finder limitado)")
-else:
-    st.success("✅ Todas APIs OK!")
+db = st.session_state.db
+
+# Canal / vídeo atualmente selecionados (usados pelas outras páginas)
+if "canal_atual_id" not in st.session_state:
+    st.session_state.canal_atual_id = None
+if "video_atual_id" not in st.session_state:
+    st.session_state.video_atual_id = None
+
+
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+def gerar_id():
+    return str(uuid.uuid4())[:8]
+
+
+def obter_canal(canal_id):
+    return db["canais"].get(canal_id)
+
+
+def obter_video(canal_id, video_id):
+    canal = obter_canal(canal_id)
+    if not canal:
+        return None
+    return canal["videos"].get(video_id)
+
+
+def etapa_atual(status_dict):
+    """Retorna a maior etapa concluída e se já terminou tudo."""
+    ordem = [
+        "0_canal",
+        "1_roteiro",
+        "2_thumbnail",
+        "3_audio",
+        "4_video",
+        "5_publicacao",
+        "6_dashboard",
+    ]
+    ultima = -1
+    for i, k in enumerate(ordem):
+        if status_dict.get(k):
+            ultima = i
+    concluido = all(status_dict.get(k, False) for k in ordem)
+    return ultima, concluido
+
+
+def nome_etapa(idx):
+    nomes = [
+        "0 – Canal pronto",
+        "1 – Roteiro",
+        "2 – Thumbnails",
+        "3 – Áudio",
+        "4 – Vídeo",
+        "5 – Publicação",
+        "6 – Dashboard",
+    ]
+    if 0 <= idx < len(nomes):
+        return nomes[idx]
+    return "Não iniciado"
+
+
+# -------------------------------------------------------------------
+# Sidebar – seleção/criação de canal e vídeo
+# -------------------------------------------------------------------
+with st.sidebar:
+    st.header("🔧 Seleção de Canal e Vídeo")
+
+    # Lista de canais existentes
+    canais_ids = list(db["canais"].keys())
+    canais_nomes = [db["canais"][cid]["nome"] for cid in canais_ids]
+
+    if canais_ids:
+        idx_sel = st.selectbox(
+            "Canal atual",
+            options=range(len(canais_ids)),
+            format_func=lambda i: canais_nomes[i],
+            index=0 if st.session_state.canal_atual_id not in canais_ids else canais_ids.index(st.session_state.canal_atual_id),
+        )
+        canal_atual_id = canais_ids[idx_sel]
+        st.session_state.canal_atual_id = canal_atual_id
+    else:
+        canal_atual_id = None
+        st.info("Nenhum canal cadastrado ainda. Cadastre abaixo.")
+
+    st.markdown("---")
+    st.subheader("➕ Novo canal")
+
+    with st.expander("Criar canal (manual ou por link)", expanded=not bool(canais_ids)):
+        nome_canal = st.text_input("Nome do canal")
+        link_canal = st.text_input("Link do canal YouTube (opcional)")
+        nicho_canal = st.text_input("Nicho principal", value="Finanças / Motivação / etc.")
+        persona = st.text_input("Persona do público", value="Jovens buscando renda extra")
+        idioma = st.selectbox("Idioma principal", ["pt-BR", "en-US", "es-ES"], index=0)
+
+        if st.button("💾 Salvar novo canal"):
+            if not nome_canal.strip():
+                st.warning("Informe pelo menos o nome do canal.")
+            else:
+                new_id = gerar_id()
+                db["canais"][new_id] = {
+                    "nome": nome_canal.strip(),
+                    "link_youtube": link_canal.strip(),
+                    "nicho": nicho_canal.strip(),
+                    "persona": persona.strip(),
+                    "idioma": idioma,
+                    "criado_em": datetime.now().isoformat(),
+                    "videos": {},
+                }
+                st.session_state.canal_atual_id = new_id
+                st.success(f"Canal '{nome_canal}' criado!")
+                st.experimental_rerun()
+
+    # Se já há canal, permitir criação de vídeo
+    if st.session_state.canal_atual_id:
+        st.markdown("---")
+        st.subheader("➕ Novo vídeo para este canal")
+
+        novo_titulo_video = st.text_input("Título do novo vídeo")
+        descricao_rapida = st.text_area(
+            "Descrição / ideia do vídeo (opcional)",
+            height=80,
+        )
+
+        if st.button("Criar vídeo neste canal"):
+            if not novo_titulo_video.strip():
+                st.warning("Dê um título para o vídeo.")
+            else:
+                vid_id = gerar_id()
+                canal = db["canais"][st.session_state.canal_atual_id]
+                canal["videos"][vid_id] = {
+                    "titulo": novo_titulo_video.strip(),
+                    "descricao": descricao_rapida.strip(),
+                    "status": {
+                        "0_canal": True,
+                        "1_roteiro": False,
+                        "2_thumbnail": False,
+                        "3_audio": False,
+                        "4_video": False,
+                        "5_publicacao": False,
+                        "6_dashboard": False,
+                    },
+                    "artefatos": {
+                        "roteiro": None,
+                        "thumbs": None,
+                        "audio_path": None,
+                        "video_path": None,
+                        "youtube_url": None,
+                    },
+                    "criado_em": datetime.now().isoformat(),
+                    "ultima_atualizacao": datetime.now().isoformat(),
+                }
+                st.session_state.video_atual_id = vid_id
+                st.success("Vídeo criado!")
+                st.experimental_rerun()
+
+
+# -------------------------------------------------------------------
+# Corpo – visão por canal e por vídeo
+# -------------------------------------------------------------------
+canal_atual_id = st.session_state.canal_atual_id
+if not canal_atual_id:
+    st.warning("Cadastre um canal na barra lateral para começar.")
+    st.stop()
+
+canal = obter_canal(canal_atual_id)
+st.subheader(f"📺 Canal: **{canal['nome']}**")
+col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+with col_c1:
+    st.metric("Nicho", canal.get("nicho", "-"))
+with col_c2:
+    st.metric("Idioma", canal.get("idioma", "-"))
+with col_c3:
+    st.metric("Vídeos cadastrados", len(canal["videos"]))
+with col_c4:
+    st.metric("Criado em", canal.get("criado_em", "")[:10])
 
 st.markdown("---")
-st.info("""
-**📋 CHECKLIST no seu papel:**
-1️⃣ Faça APIs 1.1 e 1.2
-2️⃣ Clique em cada página para testar
-3️⃣ Marque conforme funciona
-4️⃣ Me informe códigos com problema: 2.1, 3.4, etc.
-""")
 
-st.markdown("### **Páginas do MVP**")
-st.success("Clique nas abas laterais → teste sequencialmente!")
+# -------------------------------------------------------------------
+# Tabela de vídeos do canal
+# -------------------------------------------------------------------
+st.header("🎞️ Vídeos deste canal")
+
+videos_dict = canal["videos"]
+if not videos_dict:
+    st.info("Nenhum vídeo cadastrado ainda. Crie um vídeo na barra lateral.")
+    st.stop()
+
+# Preparar DataFrame para listagem
+rows = []
+for vid, data in videos_dict.items():
+    idx, done = etapa_atual(data["status"])
+    rows.append(
+        {
+            "video_id": vid,
+            "Título": data["titulo"],
+            "Etapa atual": nome_etapa(idx) if idx >= 0 else "Não iniciado",
+            "Concluído": "✅" if done else "⏳",
+            "Criado em": data.get("criado_em", "")[:16],
+        }
+    )
+
+df_list = pd.DataFrame(rows)
+
+# Seleção de vídeo
+col_ls1, col_ls2 = st.columns([2, 1])
+with col_ls1:
+    st.dataframe(
+        df_list[["Título", "Etapa atual", "Concluído", "Criado em"]],
+        use_container_width=True,
+        height=220,
+    )
+
+with col_ls2:
+    # Selectbox de vídeos por título
+    vids_ids = [r["video_id"] for r in rows]
+    vids_titulos = [r["Título"] for r in rows]
+    idx_video_sel = st.selectbox(
+        "Vídeo em foco",
+        options=range(len(vids_ids)),
+        format_func=lambda i: vids_titulos[i],
+        index=0
+        if st.session_state.video_atual_id not in vids_ids
+        else vids_ids.index(st.session_state.video_atual_id),
+    )
+    video_atual_id = vids_ids[idx_video_sel]
+    st.session_state.video_atual_id = video_atual_id
+
+video = obter_video(canal_atual_id, video_atual_id)
+
+st.markdown("---")
+
+# -------------------------------------------------------------------
+# Painel detalhado do vídeo selecionado
+# -------------------------------------------------------------------
+st.header("🎯 Pipeline do vídeo selecionado")
+
+col_v1, col_v2 = st.columns([2, 1])
+with col_v1:
+    st.markdown(f"### 🎬 {video['titulo']}")
+    if video.get("descricao"):
+        st.caption(video["descricao"])
+with col_v2:
+    idx_e, finished = etapa_atual(video["status"])
+    st.metric("Etapa atual", nome_etapa(idx_e) if idx_e >= 0 else "Não iniciado")
+    st.metric("Status geral", "Concluído ✅" if finished else "Em produção ⏳")
+
+st.markdown("#### 🧩 Etapas da pipeline")
+
+etapas = [
+    ("0_canal", "0 – Canal pronto", "Somente cadastro e análise do canal"),
+    ("1_roteiro", "1 – Roteiro", "Roteiro gerado e aprovado"),
+    ("2_thumbnail", "2 – Thumbnails", "Thumbs A/B/C geradas e escolhidas"),
+    ("3_audio", "3 – Áudio", "Narração TTS pronta"),
+    ("4_video", "4 – Vídeo", "Vídeo final renderizado"),
+    ("5_publicacao", "5 – Publicação", "Upload/agendamento no YouTube"),
+    ("6_dashboard", "6 – Dashboard", "Métricas e resultados monitorados"),
+]
+
+# Para cada etapa, mostrar status + botão para ir à página correspondente.
+for key, nome, desc in etapas:
+    done = video["status"].get(key, False)
+    idx = etapas.index((key, nome, desc))
+
+    col_e1, col_e2, col_e3 = st.columns([2, 4, 2])
+    with col_e1:
+        icone = "✅" if done else ("🟡" if idx <= idx_e + 1 else "⚪")
+        st.markdown(f"**{icone} {nome}**")
+        st.caption(desc)
+    with col_e2:
+        resumo = ""
+        artefatos = video.get("artefatos", {})
+        if key == "1_roteiro" and artefatos.get("roteiro"):
+            resumo = "Roteiro salvo."
+        elif key == "2_thumbnail" and artefatos.get("thumbs"):
+            resumo = "Thumbnails geradas."
+        elif key == "3_audio" and artefatos.get("audio_path"):
+            resumo = f"Áudio em: {artefatos['audio_path']}"
+        elif key == "4_video" and artefatos.get("video_path"):
+            resumo = f"Vídeo em: {artefatos['video_path']}"
+        elif key == "5_publicacao" and artefatos.get("youtube_url"):
+            resumo = f"Publicado: {artefatos['youtube_url']}"
+        elif key == "6_dashboard":
+            resumo = "Dados disponíveis no dashboard (página 6), se configurado."
+        else:
+            resumo = "Ainda sem artefatos salvos."
+
+        st.caption(resumo)
+
+    with col_e3:
+        # Mapear etapa para página Streamlit
+        pagina_map = {
+            "0_canal": None,               # continua no laboratório se quiser
+            "1_roteiro": "pages/1_Roteiro_Viral.py",
+            "2_thumbnail": "pages/2_Thumbnail_AB.py",
+            "3_audio": "pages/3_Audio_TTS.py",
+            "4_video": "pages/4_Video_Final.py",
+            "5_publicacao": "pages/5_Publicar.py",
+            "6_dashboard": "pages/6_Dashboard.py",
+        }
+        destino = pagina_map[key]
+        if destino:
+            st.page_link(
+                destino,
+                label="Ir para etapa",
+                icon="➡️",
+            )
+
+    st.markdown("---")
+
+# -------------------------------------------------------------------
+# Resumo por etapa (visão agregada do canal)
+# -------------------------------------------------------------------
+st.header("📊 Resumo de progresso do canal")
+
+contagem = {
+    "Ideia / só criado": 0,
+    "Roteiro pronto": 0,
+    "Thumb pronta": 0,
+    "Áudio pronto": 0,
+    "Vídeo pronto": 0,
+    "Publicado": 0,
+}
+
+for vid_id, v in canal["videos"].items():
+    stt = v["status"]
+    if stt.get("5_publicacao"):
+        contagem["Publicado"] += 1
+    elif stt.get("4_video"):
+        contagem["Vídeo pronto"] += 1
+    elif stt.get("3_audio"):
+        contagem["Áudio pronto"] += 1
+    elif stt.get("2_thumbnail"):
+        contagem["Thumb pronta"] += 1
+    elif stt.get("1_roteiro"):
+        contagem["Roteiro pronto"] += 1
+    else:
+        contagem["Ideia / só criado"] += 1
+
+col_r1, col_r2, col_r3 = st.columns(3)
+with col_r1:
+    st.metric("Somente criados", contagem["Ideia / só criado"])
+with col_r2:
+    st.metric("Roteiro pronto", contagem["Roteiro pronto"])
+with col_r3:
+    st.metric("Thumb pronta", contagem["Thumb pronta"])
+
+col_r4, col_r5, col_r6 = st.columns(3)
+with col_r4:
+    st.metric("Áudio pronto", contagem["Áudio pronto"])
+with col_r5:
+    st.metric("Vídeo pronto", contagem["Vídeo pronto"])
+with col_r6:
+    st.metric("Publicados", contagem["Publicado"])
+
+st.markdown("---")
+st.caption(
+    "Use este monitor como painel central. "
+    "Cada página (1–6) deve ler `st.session_state.canal_atual_id` e "
+    "`st.session_state.video_atual_id` para saber em qual vídeo trabalhar, "
+    "e atualizar `db['canais'][canal_id]['videos'][video_id]['status']` quando concluir a etapa."
+)
