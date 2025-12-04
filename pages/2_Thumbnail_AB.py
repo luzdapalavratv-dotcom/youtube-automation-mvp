@@ -1,15 +1,16 @@
-import streamlit as st
-import requests
+import os
 import io
-from PIL import Image
-import random
+import uuid
 from datetime import datetime
 
-st.set_page_config(page_title="2 – Thumbnail A/B/C", layout="wide")
-st.title("🖼 2 – Gerador de Thumbnails A/B/C para YouTube")
+import requests
+import streamlit as st
+
+st.set_page_config(page_title="2 – Thumbnails e Imagens", layout="wide")
+st.title("🖼 2 – Gerador de Imagens do Vídeo (Pollinations)")
 
 # -------------------------------------------------------------------
-# Integra com o "banco" e seleção do monitor
+# Integra com o "banco"
 # -------------------------------------------------------------------
 def criar_db_vazio():
     return {"canais": {}}
@@ -38,411 +39,225 @@ if not video_id or video_id not in videos:
 
 video = videos[video_id]
 
-# -------------------------------------------------------------------
-# Session state local dessa página
-# -------------------------------------------------------------------
-defaults = {
-    "thumbnail_a": None,
-    "thumbnail_b": None,
-    "thumbnail_c": None,
-    "prompt_a": "",
-    "prompt_b": "",
-    "prompt_c": "",
-    "vencedor_thumb": None,
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+if "artefatos" not in video:
+    video["artefatos"] = {}
 
-# Garante estrutura de thumbs no artefato do vídeo
-if "thumbs" not in video["artefatos"] or video["artefatos"]["thumbs"] is None:
-    video["artefatos"]["thumbs"] = {
-        "img_a": None,
-        "img_b": None,
-        "img_c": None,
-        "prompt_a": "",
-        "prompt_b": "",
-        "prompt_c": "",
-        "vencedor": None,
-        "experimentos": [],
-    }
+roteiro = video["artefatos"].get("roteiro")
+if not roteiro or "image_prompts" not in roteiro:
+    st.warning(
+        "Este vídeo ainda não tem prompts de imagem salvos no roteiro "
+        "(página 1). Gere o roteiro longo primeiro."
+    )
+    st.stop()
+
+image_prompts = roteiro["image_prompts"]  # dict[bloco] -> [prompts]
+
+# Estrutura onde salvaremos os caminhos das imagens
+if "imagens_roteiro" not in video["artefatos"]:
+    video["artefatos"]["imagens_roteiro"] = {}  # bloco -> lista de dicts {prompt, path}
+
+imagens_roteiro = video["artefatos"]["imagens_roteiro"]
 
 # -------------------------------------------------------------------
-# Sidebar – contexto e opções
+# Configurações Pollinations
 # -------------------------------------------------------------------
 with st.sidebar:
     st.header("📺 Contexto")
-
     st.markdown(f"**Canal:** {canal.get('nome','')}")
     st.markdown(f"**Vídeo:** {video.get('titulo','')}")
 
     st.markdown("---")
-    st.header("🎯 Estratégia da Thumbnail")
+    st.header("⚙️ Pollinations")
 
-    estrategia = st.selectbox(
-        "Estratégia visual",
-        [
-            "Emocional (rosto+expressão forte)",
-            "Curiosidade (mistério/números)",
-            "Contraste (antes/depois)",
-            "Luxo (produtos/patrimônio)",
-        ],
+    base_url = st.text_input(
+        "Endpoint base",
+        value="https://image.pollinations.ai/prompt",
+        help="Endpoint público do Pollinations para geração de imagens a partir de prompt.",  # [web:350][web:361]
     )
 
-    qualidade = st.selectbox(
-        "Modelo Pollinations",
-        ["flux", "turbo", "stable-diffusion"],
+    modelo_padrao = st.selectbox(
+        "Modelo de imagem",
+        ["turbo", "flux", "openai"],
         index=0,
-    )
+        help="O modelo 'turbo' é o padrão ultra-rápido recomendado.",
+    )  # [web:348][web:351]
 
-    cores = st.multiselect(
-        "Esquema de cores sugerido",
-        ["Vermelho/Branco", "Azul/Dourado", "Preto/Amarelo", "Verde/Branco", "Roxo/Branco"],
-        default=["Vermelho/Branco"],
-    )
+    largura = st.number_input("Largura (px)", value=1280, min_value=512, max_value=2048, step=64)
+    altura = st.number_input("Altura (px)", value=720, min_value=512, max_value=2048, step=64)
 
-    st.markdown("---")
-    st.header("🔤 Texto na Thumbnail")
-
-    modo_texto = st.selectbox(
-        "Tipo de texto na imagem",
-        [
-            "Imagem limpa (sem texto)",
-            "Pouco texto (título curto)",
-            "Muito texto (título grande)",
-        ],
-        index=1,
-    )
-
-    st.markdown("---")
-    st.header("😊 Expressão emocional")
-
-    expressao = st.selectbox(
-        "Expressão principal",
-        ["Chocado(a)", "Feliz", "Sério", "Misterioso", "Bravo(a)"],
-        index=0,
-    )
-
-    st.markdown("---")
-    st.header("🧪 Experimento")
-
-    nome_experimento = st.text_input(
-        "Nome do experimento A/B/C",
-        value=f"Thumb {datetime.now().strftime('%d/%m %H:%M')}",
-    )
+    st.caption(
+        "As imagens são geradas chamando a API do Pollinations a partir dos prompts de cada parágrafo."
+    )  # [web:350][web:361]
 
 # -------------------------------------------------------------------
-# Funções auxiliares
+# Função para chamar Pollinations
 # -------------------------------------------------------------------
-def gerar_thumbnail_pollinations(prompt, width=1280, height=720, model="flux"):
-    """Gera thumbnail via Pollinations.ai (retorna PIL.Image ou None)."""
-    url = (
-        f"https://image.pollinations.ai/prompt/{prompt}"
-        f"?width={width}&height={height}&model={model}&nologo=true&enhance=true"
-    )
+def gerar_imagem_pollinations(prompt: str, model: str, width: int, height: int) -> bytes | None:
+    """
+    Usa o endpoint público do Pollinations para gerar uma imagem a partir do prompt.
+    A API básica permite passar parâmetros via querystring. [web:350]
+    """
+    if not prompt:
+        return None
+
+    params = {
+        "model": model,
+        "width": width,
+        "height": height,
+    }
     try:
-        resp = requests.get(url, timeout=60)
-        if resp.status_code == 200:
-            return Image.open(io.BytesIO(resp.content))
+        # Prompt na URL; Pollinations interpreta automaticamente. [web:350]
+        url = f"{base_url}/{requests.utils.quote(prompt)}"
+        resp = requests.get(url, params=params, timeout=90)
+        if resp.status_code != 200:
+            st.error(f"Erro HTTP {resp.status_code} ao gerar imagem.")
+            return None
+        return resp.content
+    except Exception as e:
+        st.error(f"Erro ao chamar Pollinations: {e}")
         return None
-    except Exception:
-        return None
-
-
-def montar_descricao_texto(titulo: str):
-    base = titulo or "YouTube video"
-    if modo_texto.startswith("Imagem limpa"):
-        return "no text, clean composition, focus only on subject and background"
-    if modo_texto.startswith("Pouco texto"):
-        return f"short bold text '{base[:18]}', large readable font, few words"
-    return f"large bold text '{base[:28]}', big title, multiple words, still highly readable"
-
-
-def montar_expressao():
-    if expressao == "Chocado(a)":
-        return "shocked expression, wide open eyes, strong emotion"
-    if expressao == "Feliz":
-        return "happy smiling face, positive energy"
-    if expressao == "Sério":
-        return "serious face, focused, intense look"
-    if expressao == "Misterioso":
-        return "mysterious look, half shadows, intrigue"
-    if expressao == "Bravo(a)":
-        return "angry face, intense, confrontational"
-    return ""
-
-
-def montar_cores():
-    if not cores:
-        return "high contrast color palette"
-    return ", ".join(cores) + " color palette, high contrast"
-
-
-def criar_prompt(titulo: str, estrategia: str, variante: str = ""):
-    base = titulo or video.get("titulo", "") or "viral YouTube video"
-    texto_instr = montar_descricao_texto(base)
-    expr = montar_expressao()
-    cores_txt = montar_cores()
-
-    if estrategia.startswith("Emocional"):
-        core = (
-            f"closeup human face, {expr}, {texto_instr}, "
-            "cinematic lighting, depth of field, highly detailed, "
-            f"{cores_txt}, composition optimized for YouTube thumbnail"
-        )
-    elif estrategia.startswith("Curiosidade"):
-        core = (
-            f"scene that creates curiosity about {base}, maybe a big number or object, "
-            f"{texto_instr}, {cores_txt}, dramatic lighting, cinematic, mystery vibe"
-        )
-    elif estrategia.startswith("Contraste"):
-        core = (
-            f"split screen before and after transformation related to {base}, "
-            f"{texto_instr}, {cores_txt}, strong contrast left vs right, bold layout"
-        )
-    elif estrategia.startswith("Luxo"):
-        core = (
-            f"luxury and wealth concept related to {base}, gold lighting, reflections, "
-            f"{texto_instr}, {cores_txt}, cinematic, professional photo"
-        )
-    else:
-        core = (
-            f"youtube thumbnail about {base}, {texto_instr}, {cores_txt}, cinematic lighting"
-        )
-
-    if variante:
-        core += f", {variante}"
-
-    return core
 
 # -------------------------------------------------------------------
-# Interface principal
+# Listagem de prompts
 # -------------------------------------------------------------------
-st.subheader("📝 Conteúdo base")
+st.subheader("🧾 Prompts de imagem vindos do roteiro")
 
-titulo_base = video.get("titulo", "")
-novo_titulo = st.text_input(
-    "Texto base (usado no prompt, se houver texto na imagem)",
-    value=titulo_base[:60] if titulo_base else "Exemplo de Thumbnail Viral",
-)
+blocos_ordenados = [
+    "hook",
+    "introducao",
+    "capitulo_1",
+    "capitulo_2",
+    "capitulo_3",
+    "capitulo_4",
+    "capitulo_5",
+    "conclusao",
+]
+labels = {
+    "hook": "Hook",
+    "introducao": "Introdução com CTA",
+    "capitulo_1": "Capítulo 1",
+    "capitulo_2": "Capítulo 2",
+    "capitulo_3": "Capítulo 3",
+    "capitulo_4": "Capítulo 4",
+    "capitulo_5": "Capítulo 5",
+    "conclusao": "Conclusão",
+}
 
-# -------------------------------------------------------------------
-# Geração A / B / C + delete
-# -------------------------------------------------------------------
-st.subheader("⚙️ Geração das variações")
+total_prompts = sum(len(image_prompts.get(b, []) or []) for b in blocos_ordenados)
+st.write(f"Total de prompts de imagem detectados neste vídeo: **{total_prompts}**")
 
-col_a, col_b, col_c = st.columns(3)
+tabs = st.tabs([labels.get(b, b) for b in blocos_ordenados])
 
-with col_a:
-    if st.button("🎨 Gerar A"):
-        with st.spinner("Gerando Thumbnail A..."):
-            prompt_a = criar_prompt(novo_titulo, estrategia, "version A")
-            img_a = gerar_thumbnail_pollinations(prompt_a, model=qualidade)
-            if img_a:
-                st.session_state.thumbnail_a = img_a
-                st.session_state.prompt_a = prompt_a
-                st.session_state.vencedor_thumb = None
-                st.success("Thumbnail A gerada!")
-            else:
-                st.error("Falha ao gerar Thumbnail A.")
-    if st.button("🗑 Apagar A"):
-        st.session_state.thumbnail_a = None
-        st.session_state.prompt_a = ""
-        st.success("Thumbnail A apagada.")
-
-with col_b:
-    if st.button("🖼 Gerar B"):
-        with st.spinner("Gerando Thumbnail B..."):
-            prompt_b = criar_prompt(
-                novo_titulo, estrategia, "different camera angle, version B"
-            )
-            img_b = gerar_thumbnail_pollinations(prompt_b, model=qualidade)
-            if img_b:
-                st.session_state.thumbnail_b = img_b
-                st.session_state.prompt_b = prompt_b
-                st.session_state.vencedor_thumb = None
-                st.success("Thumbnail B gerada!")
-            else:
-                st.error("Falha ao gerar Thumbnail B.")
-    if st.button("🗑 Apagar B"):
-        st.session_state.thumbnail_b = None
-        st.session_state.prompt_b = ""
-        st.success("Thumbnail B apagada.")
-
-with col_c:
-    if st.button("🧪 Gerar C"):
-        with st.spinner("Gerando Thumbnail C..."):
-            prompt_c = criar_prompt(
-                novo_titulo, estrategia, "different background, version C"
-            )
-            img_c = gerar_thumbnail_pollinations(prompt_c, model=qualidade)
-            if img_c:
-                st.session_state.thumbnail_c = img_c
-                st.session_state.prompt_c = prompt_c
-                st.session_state.vencedor_thumb = None
-                st.success("Thumbnail C gerada!")
-            else:
-                st.error("Falha ao gerar Thumbnail C.")
-    if st.button("🗑 Apagar C"):
-        st.session_state.thumbnail_c = None
-        st.session_state.prompt_c = ""
-        st.success("Thumbnail C apagada.")
+for bloco, tab in zip(blocos_ordenados, tabs):
+    prompts = image_prompts.get(bloco, []) or []
+    with tab:
+        if not prompts:
+            st.info("Nenhum prompt de imagem para este bloco.")
+        else:
+            for i, p in enumerate(prompts):
+                st.markdown(f"**Parágrafo {i+1} – Prompt:**")
+                st.code(p or "(vazio)", language="text")
 
 # -------------------------------------------------------------------
-# Preview pequeno
+# Geração de imagens
 # -------------------------------------------------------------------
-st.subheader("👁️ Preview rápido (miniaturas)")
-
-p1, p2, p3 = st.columns(3)
-with p1:
-    st.caption("Preview A")
-    if isinstance(st.session_state.thumbnail_a, Image.Image):
-        st.image(st.session_state.thumbnail_a, width=120)
-    else:
-        st.text("Sem A")
-
-with p2:
-    st.caption("Preview B")
-    if isinstance(st.session_state.thumbnail_b, Image.Image):
-        st.image(st.session_state.thumbnail_b, width=120)
-    else:
-        st.text("Sem B")
-
-with p3:
-    st.caption("Preview C")
-    if isinstance(st.session_state.thumbnail_c, Image.Image):
-        st.image(st.session_state.thumbnail_c, width=120)
-    else:
-        st.text("Sem C")
-
 st.markdown("---")
+st.subheader("🖼 Geração de imagens com Pollinations")
 
-# -------------------------------------------------------------------
-# Exibição grande + votação
-# -------------------------------------------------------------------
-st.subheader("👀 Teste A/B/C – escolha a vencedora")
+col_g1, col_g2 = st.columns(2)
 
-img_a = st.session_state.thumbnail_a
-img_b = st.session_state.thumbnail_b
-img_c = st.session_state.thumbnail_c
-
-g1, g2, g3 = st.columns(3)
-with g1:
-    st.markdown("### A")
-    if isinstance(img_a, Image.Image):
-        st.image(img_a, use_column_width=True)
-        if st.session_state.prompt_a:
-            st.caption(st.session_state.prompt_a[:110] + "...")
-    else:
-        st.info("Gere a opção A.")
-    if st.button("⭐ Voto A", key="vote_a"):
-        if isinstance(img_a, Image.Image):
-            st.session_state.vencedor_thumb = "A"
-            st.success("A marcada como vencedora.")
+with col_g1:
+    if st.button("🚀 Gerar TODAS as imagens em sequência (modelo turbo)"):
+        if total_prompts == 0:
+            st.warning("Nenhum prompt encontrado no roteiro.")
         else:
-            st.warning("Gere a A primeiro.")
+            with st.spinner("Gerando todas as imagens com Pollinations..."):
+                geradas = 0
+                for bloco in blocos_ordenados:
+                    prompts = image_prompts.get(bloco, []) or []
+                    if bloco not in imagens_roteiro:
+                        imagens_roteiro[bloco] = []
 
-with g2:
-    st.markdown("### B")
-    if isinstance(img_b, Image.Image):
-        st.image(img_b, use_column_width=True)
-        if st.session_state.prompt_b:
-            st.caption(st.session_state.prompt_b[:110] + "...")
-    else:
-        st.info("Gere a opção B.")
-    if st.button("⭐ Voto B", key="vote_b"):
-        if isinstance(img_b, Image.Image):
-            st.session_state.vencedor_thumb = "B"
-            st.success("B marcada como vencedora.")
-        else:
-            st.warning("Gere a B primeiro.")
+                    # Garante lista de mesmo tamanho
+                    if len(imagens_roteiro[bloco]) < len(prompts):
+                        imagens_roteiro[bloco] += [
+                            None
+                        ] * (len(prompts) - len(imagens_roteiro[bloco]))
 
-with g3:
-    st.markdown("### C")
-    if isinstance(img_c, Image.Image):
-        st.image(img_c, use_column_width=True)
-        if st.session_state.prompt_c:
-            st.caption(st.session_state.prompt_c[:110] + "...")
-    else:
-        st.info("Gere a opção C.")
-    if st.button("⭐ Voto C", key="vote_c"):
-        if isinstance(img_c, Image.Image):
-            st.session_state.vencedor_thumb = "C"
-            st.success("C marcada como vencedora.")
-        else:
-            st.warning("Gere a C primeiro.")
+                    for idx, prompt in enumerate(prompts):
+                        if not prompt:
+                            continue
+
+                        # Se já existe imagem para esse índice, pula
+                        entrada_existente = imagens_roteiro[bloco][idx]
+                        if entrada_existente and entrada_existente.get("path"):
+                            continue
+
+                        conteudo = gerar_imagem_pollinations(
+                            prompt=prompt,
+                            model=modelo_padrao or "turbo",
+                            width=largura,
+                            height=altura,
+                        )
+                        if conteudo:
+                            nome_arquivo = f"img_{video_id}_{bloco}_{idx}_{uuid.uuid4().hex[:6]}.png"
+                            pasta = "imagens_video"
+                            os.makedirs(pasta, exist_ok=True)
+                            caminho = os.path.join(pasta, nome_arquivo)
+                            with open(caminho, "wb") as f:
+                                f.write(conteudo)
+
+                            imagens_roteiro[bloco][idx] = {
+                                "prompt": prompt,
+                                "path": caminho,
+                                "modelo": modelo_padrao,
+                                "width": largura,
+                                "height": altura,
+                                "gerado_em": datetime.now().isoformat(),
+                            }
+                            geradas += 1
+
+                video["artefatos"]["imagens_roteiro"] = imagens_roteiro
+                video["status"]["2_thumbnails"] = True
+                video["ultima_atualizacao"] = datetime.now().isoformat()
+                st.success(f"Imagens geradas/salvas: {geradas}")
+
+with col_g2:
+    if st.button("🗑 Limpar todas as imagens geradas"):
+        video["artefatos"]["imagens_roteiro"] = {}
+        video["status"]["2_thumbnails"] = False
+        video["ultima_atualizacao"] = datetime.now().isoformat()
+        st.success("Todas as imagens deste vídeo foram desvinculadas (arquivos no disco permanecem).")
 
 # -------------------------------------------------------------------
-# CTR estimado e anotação de CTR real
+# Visualização das imagens salvas
 # -------------------------------------------------------------------
-st.subheader("📈 CTR estimado (simulado) + CTR real")
+st.markdown("---")
+st.subheader("🖼 Imagens já geradas")
 
-if st.session_state.vencedor_thumb in ["A", "B", "C"]:
-    ctr_estimado = random.uniform(8.5, 15.2)
-    col_ce1, col_ce2 = st.columns(2)
-    with col_ce1:
-        st.metric("CTR estimado", f"{ctr_estimado:.1f}%", "↑ 2.3%")
-    with col_ce2:
-        ctr_real = st.text_input(
-            "Opcional: CTR real observado no YouTube Studio (%)",
-            placeholder="Ex.: 9.8",
-        )
-        st.caption("Preencha depois que o vídeo rodar um tempo para comparar.")
+imagens_roteiro = video["artefatos"].get("imagens_roteiro", {}) or {}
+
+if not imagens_roteiro:
+    st.info("Nenhuma imagem gerada ainda. Use o botão acima para gerar todas.")
 else:
-    st.caption("Escolha A, B ou C como vencedora para ver a CTR estimada.")
+    for bloco in blocos_ordenados:
+        lista = imagens_roteiro.get(bloco, []) or []
+        if not lista:
+            continue
 
-# -------------------------------------------------------------------
-# Salvar no artefato do vídeo + histórico
-# -------------------------------------------------------------------
-st.subheader("💾 Salvar resultado no vídeo")
-
-if st.button("Salvar thumbs no vídeo"):
-    thumbs = video["artefatos"]["thumbs"]
-    thumbs["img_a"] = st.session_state.thumbnail_a
-    thumbs["img_b"] = st.session_state.thumbnail_b
-    thumbs["img_c"] = st.session_state.thumbnail_c
-    thumbs["prompt_a"] = st.session_state.prompt_a
-    thumbs["prompt_b"] = st.session_state.prompt_b
-    thumbs["prompt_c"] = st.session_state.prompt_c
-    thumbs["vencedor"] = st.session_state.vencedor_thumb
-
-    thumbs["experimentos"].append(
-        {
-            "nome": nome_experimento,
-            "vencedor": st.session_state.vencedor_thumb,
-            "modo_texto": modo_texto,
-            "estrategia": estrategia,
-            "expressao": expressao,
-            "modelo": qualidade,
-            "titulo_base": novo_titulo,
-            "data": datetime.now().isoformat(),
-        }
-    )
-
-    # Marca etapa 2 como concluída se houver ao menos uma thumb
-    if any(isinstance(x, Image.Image) for x in [img_a, img_b, img_c]):
-        video["status"]["2_thumbnail"] = True
-    video["ultima_atualizacao"] = datetime.now().isoformat()
-
-    st.success("Thumbnails salvas no vídeo e etapa 2 marcada como concluída.")
-
-# Mostrar histórico de experimentos salvos para este vídeo
-hist = video["artefatos"]["thumbs"].get("experimentos", [])[-5:]
-if hist:
-    st.subheader("🖼 Histórico de experimentos deste vídeo")
-    for item in reversed(hist):
-        st.markdown(
-            f"**Experimento:** {item.get('nome','')}  \n"
-            f"**Vencedor:** {item.get('vencedor','N/A')}  |  "
-            f"**Texto:** {item.get('modo_texto','')}  |  "
-            f"**Estratégia:** {item.get('estrategia','')}  |  "
-            f"**Expressão:** {item.get('expressao','')}"
-        )
-        st.caption(f"Data: {item.get('data','')[:16]}")
-        st.divider()
+        st.markdown(f"### {labels.get(bloco, bloco)}")
+        cols = st.columns(3)
+        col_idx = 0
+        for idx, item in enumerate(lista):
+            if not item or not item.get("path") or not os.path.exists(item["path"]):
+                continue
+            with cols[col_idx]:
+                st.image(item["path"], caption=f"{bloco} – parágrafo {idx+1}")
+                st.caption(f"Modelo: {item.get('modelo','-')}")
+            col_idx = (col_idx + 1) % len(cols)
 
 st.markdown("---")
 st.caption(
-    "Após escolher a melhor thumbnail e salvar, volte ao **Monitor de Produção** "
-    "para acompanhar as próximas etapas (Áudio, Vídeo, Publicação)."
+    "Estas imagens são geradas a partir dos prompts de cada parágrafo do roteiro. "
+    "Use-as como thumbnails, cenas de vídeo ou material de apoio na edição."
 )
