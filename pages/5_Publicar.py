@@ -1,210 +1,216 @@
 import streamlit as st
-import googleapiclient.discovery
-import googleapiclient.errors
-from googleapiclient.http import MediaFileUpload
+from datetime import datetime
 import os
-import tempfile
-from datetime import datetime, timedelta
 
-st.set_page_config(page_title="5_Publicar", layout="wide")
-st.title("📤 Publicador Automático YouTube")
+st.set_page_config(page_title="5 – Publicar / Upload", layout="wide")
+st.title("📤 5 – Publicação do Vídeo (YouTube manual / API futura)")
 
-# Verificar pipeline completa
-if "roteiro_gerado" not in st.session_state or not hasattr(st.session_state, 'audio_completo'):
-    st.error("❌ Complete a pipeline (páginas 1-4) antes de publicar!")
+# -------------------------------------------------------------------
+# Integra com o "banco" e seleção do monitor
+# -------------------------------------------------------------------
+def criar_db_vazio():
+    return {"canais": {}}
+
+if "db" not in st.session_state:
+    st.session_state.db = criar_db_vazio()
+db = st.session_state.db
+
+if "canal_atual_id" not in st.session_state:
+    st.session_state.canal_atual_id = None
+if "video_atual_id" not in st.session_state:
+    st.session_state.video_atual_id = None
+
+canal_id = st.session_state.canal_atual_id
+video_id = st.session_state.video_atual_id
+
+if not canal_id or canal_id not in db["canais"]:
+    st.error("Nenhum canal selecionado. Vá ao app principal (monitor) e escolha um canal/vídeo.")
     st.stop()
 
-# Inicializar YouTube API
-@st.cache_resource
-def get_youtube_service():
-    youtube = googleapiclient.discovery.build(
-        "youtube", "v3", developerKey=st.secrets["YOUTUBE_API_KEY"]
-    )
-    return youtube
+canal = db["canais"][canal_id]
+videos = canal["videos"]
+if not video_id or video_id not in videos:
+    st.error("Nenhum vídeo selecionado. Vá ao monitor e escolha um vídeo para este canal.")
+    st.stop()
 
-youtube = get_youtube_service()
+video = videos[video_id]
 
-# Sidebar configurações de publicação
+# Garante campos de artefatos
+if "youtube_url" not in video["artefatos"]:
+    video["artefatos"]["youtube_url"] = None
+if "publicacao_info" not in video["artefatos"]:
+    video["artefatos"]["publicacao_info"] = {}
+
+roteiro = video["artefatos"].get("roteiro")
+video_path = video["artefatos"].get("video_path")
+
+# -------------------------------------------------------------------
+# Sidebar – contexto e passo a passo
+# -------------------------------------------------------------------
 with st.sidebar:
-    st.header("⏰ Agendamento")
-    publicar_agora = st.checkbox("Publicar AGORA", value=True)
-    
-    if not publicar_agora:
-        data_publicacao = st.date_input("Data", datetime.now() + timedelta(days=1))
-        hora_publicacao = st.time_input("Hora (Horário local)", datetime.now().time())
-    
-    st.header("🔒 Privacidade")
-    visibilidade = st.radio("Status do vídeo", 
-                           ["private", "unlisted", "public"], index=2)
-    
-    st.header("📱 Otimização Mobile")
-    categoria = st.selectbox("Categoria", 
-                            ["22 (People & Blogs)", "24 (Entertainment)", "28 (Science & Technology)"], 
-                            index=0)
+    st.header("📺 Contexto")
+    st.markdown(f"**Canal:** {canal.get('nome','')}")
+    st.markdown(f"**Vídeo:** {video.get('titulo','')}")
 
-# Preparar metadados do vídeo
-st.header("📋 Metadados Automatizados")
+    st.markdown("---")
+    st.header("🎯 Objetivo desta etapa")
 
-col1, col2 = st.columns(2)
+    st.markdown(
+        "- Revisar **título, descrição e tags** gerados na etapa 1.\n"
+        "- Baixar o MP4 final (etapa 4).\n"
+        "- Publicar manualmente no YouTube Studio.\n"
+        "- Registrar o **link do vídeo** e marcar esta etapa como concluída.\n\n"
+        "_Integração automática com API YouTube pode ser adicionada depois "
+        "(usando `videos.insert` da YouTube Data API)._"
+    )
 
-with col1:
-    titulo_final = st.text_input("Título Final", 
-                               value=st.session_state.roteiro_gerado.get("titulo_video", "Vídeo Gerado"))
-    
-    descricao = st.text_area("Descrição", height=200, value="""
-🔥 [PRIMEIRAS LINHAS DO SEU ROTEIRO AQUI]
+# -------------------------------------------------------------------
+# 1. Dados recomendados para publicar (do roteiro)
+# -------------------------------------------------------------------
+st.subheader("📝 Metadados recomendados (a partir do roteiro)")
 
-👉 Inscreva-se no canal: [LINK DO CANAL]
-🔔 Ative o sininho para não perder nenhum vídeo!
+titulo_sug = roteiro.get("titulo_video") if isinstance(roteiro, dict) else video.get("titulo")
+desc_sug = roteiro.get("descricao") if isinstance(roteiro, dict) else ""
+tags_sug = roteiro.get("tags") if isinstance(roteiro, dict) else []
 
-#hashtags do vídeo aqui
+col_m1, col_m2 = st.columns(2)
+with col_m1:
+    titulo_pub = st.text_input(
+        "Título para publicação",
+        value=titulo_sug or video.get("titulo", ""),
+    )
+    tags_str = ", ".join(tags_sug) if tags_sug else ""
+    tags_pub = st.text_input(
+        "Tags (separadas por vírgula)",
+        value=tags_str,
+    )
+with col_m2:
+    desc_pub = st.text_area(
+        "Descrição para YouTube",
+        value=desc_sug,
+        height=120,
+    )
 
-📱 Siga também no Instagram: [INSTAGRAM]
-💬 Deixe seu comentário: Qual sua maior dúvida sobre [TEMA]?
-""")
-    
-    tags = st.text_area("Tags (separadas por vírgula)", 
-                       value="youtube, tutorial, dica, segredo, como fazer")
+st.markdown(
+    "_Dica: copie esses campos direto para o YouTube Studio quando for fazer o upload._"
+)
 
-with col2:
-    st.info("**📊 Dados Automáticos:**")
-    st.success(f"✅ Roteiro: {len(st.session_state.roteiro_gerado.get('roteiro', {}))} seções")
-    st.success(f"✅ Áudio: {os.path.getsize(st.session_state.audio_completo)/1000000:.1f}MB")
-    st.info(f"**📈 SEO Otimizado:** Título + Descrição + Tags")
+# -------------------------------------------------------------------
+# 2. Download do vídeo final para upload manual
+# -------------------------------------------------------------------
+st.subheader("📥 Vídeo final para upload")
 
-# Preparar arquivo de vídeo (placeholder - integrar com página 4)
-if "video_final_path" not in st.session_state:
-    st.session_state.video_final_path = st.session_state.audio_completo  # Usar áudio por enquanto
+if video_path and os.path.exists(video_path):
+    st.video(video_path)
 
-# Função principal de upload
-def upload_video_youtube(file_path, title, description, tags, category, privacy="public", scheduled_time=None):
-    """Faz upload do vídeo no YouTube com todas as configurações"""
-    
-    body = {
-        'snippet': {
-            'title': title,
-            'description': description,
-            'tags': tags.split(','),
-            'categoryId': category
-        },
-        'status': {
-            'privacyStatus': privacy,
-            'selfDeclaredMadeForKids': False
-        }
-    }
-    
-    if scheduled_time:
-        body['status']['publishAt'] = scheduled_time.isoformat() + "Z"
-    
-    try:
-        # Upload do arquivo
-        insert_request = youtube.videos().insert(
-            part=",".join(body.keys()),
-            body=body,
-            media_body=MediaFileUpload(file_path, chunksize=-1, resumable=True)
-        )
-        
-        response = insert_request.execute()
-        video_id = response['id']
-        
-        return {
-            "success": True,
-            "video_id": video_id,
-            "url": f"https://youtu.be/{video_id}",
-            "title": title
-        }
-        
-    except googleapiclient.errors.HttpError as e:
-        return {"success": False, "error": str(e)}
-
-# Interface de publicação
-st.header("🚀 Publicar no YouTube")
-
-col_publicar, col_status = st.columns([1,1])
-
-with col_publicar:
-    if st.button("📤 PUBLICAR VÍDEO", type="primary", use_container_width=True):
-        with st.spinner("Enviando para YouTube... (pode levar 5-10 minutos)"):
-            
-            # Configurar agendamento
-            if not publicar_agora:
-                scheduled = datetime.combine(data_publicacao, hora_publicacao)
-                scheduled_time = scheduled + timedelta(hours=3)  # UTC+3
-            else:
-                scheduled_time = None
-            
-            # Executar upload
-            resultado = upload_video_youtube(
-                st.session_state.video_final_path,
-                titulo_final,
-                descricao,
-                tags,
-                categoria,
-                visibilidade,
-                scheduled_time
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        with open(video_path, "rb") as f:
+            st.download_button(
+                "💾 Baixar MP4 para enviar no YouTube",
+                data=f.read(),
+                file_name=f"video_{video.get('titulo','video')[:20]}.mp4",
+                mime="video/mp4",
             )
-            
-            if resultado["success"]:
-                st.session_state.video_publicado = resultado
-                st.success("🎉 VÍDEO PUBLICADO COM SUCESSO!")
-                st.balloons()
-            else:
-                st.error(f"❌ Erro: {resultado['error']}")
-
-# Status do vídeo publicado
-if hasattr(st.session_state, 'video_publicado'):
-    st.header("✅ Vídeo Publicado!")
-    
-    video_data = st.session_state.video_publicado
-    
-    col_url, col_acoes = st.columns([1,1])
-    
-    with col_url:
-        st.markdown(f"**🔗 [Assistir no YouTube]({video_data['url']})**")
-        st.code(video_data['video_id'])
-        st.video(video_data['url'])
-    
-    with col_acoes:
-        st.info("**📋 Próximos passos:**")
-        st.success("✅ Vídeo processado pelo YouTube")
-        st.info("⏳ Aguardar processamento (HD)")
-        st.success("🚀 Compartilhar nas redes!")
-    
-    # Botão copiar link
-    st.markdown("``````")
-    
-    if st.button("📋 Copiar Link do Vídeo"):
-        st.success("Link copiado! Cole onde quiser!")
-
-# Histórico de publicações
-if "historico_publicacoes" not in st.session_state:
-    st.session_state.historico_publicacoes = []
-
-if st.button("💾 Salvar no Histórico"):
-    if hasattr(st.session_state, 'video_publicado'):
-        st.session_state.historico_publicacoes.append(st.session_state.video_publicado)
-        st.success("✅ Salvo no histórico!")
-
-if st.session_state.historico_publicacoes:
-    st.header("📚 Histórico de Vídeos Publicados")
-    
-    for i, video in enumerate(st.session_state.historico_publicacoes[-5:]):
-        col1, col2 = st.columns([3,1])
-        with col1:
-            st.markdown(f"**[{video['title'][:50]}...]({video['url']})**")
-        with col2:
-            st.caption(video.get('data', 'hoje'))
-
-# Validação final
-st.header("✅ Checklist Completo")
-st.markdown("""
-- [x] ✅ Roteiro viral gerado
-- [x] ✅ Thumbnail A/B testada  
-- [x] ✅ Áudio neural profissional
-- [x] ✅ Vídeo editado
-- [x] ✅ **PUBLICADO NO YOUTUBE!** 🎉
-""")
+    with col_v2:
+        info = video["artefatos"].get("video_info", {})
+        st.markdown("**Configurações do vídeo:**")
+        st.caption(
+            f"Resolução: {info.get('resolucao','-')}  \n"
+            f"FPS: {info.get('fps','-')}  \n"
+            f"Imagem origem: {info.get('imagem_origem','-')}  \n"
+            f"Gerado em: {info.get('gerado_em','')[:16]}"
+        )
+else:
+    st.warning(
+        "Nenhum vídeo final encontrado para este vídeo. Gere o vídeo na etapa 4 antes de publicar."
+    )
 
 st.markdown("---")
-st.caption("🔥 Pipeline 100% Automática | YouTube API v3 | Próximo: [6_Dashboard.py]")
 
+# -------------------------------------------------------------------
+# 3. Registro da publicação (manual) + status
+# -------------------------------------------------------------------
+st.subheader("🔗 Registro da publicação no YouTube")
+
+youtube_url_atual = video["artefatos"].get("youtube_url") or ""
+youtube_url_input = st.text_input(
+    "Cole aqui o link do vídeo publicado no YouTube (quando já estiver no ar)",
+    value=youtube_url_atual,
+    placeholder="https://www.youtube.com/watch?v=xxxxxxxxxxx",
+)
+
+privacidade = st.selectbox(
+    "Status de privacidade no YouTube",
+    ["public", "unlisted", "private"],
+    index=["public", "unlisted", "private"].index(
+        video["artefatos"]["publicacao_info"].get("privacy", "public")
+        if video["artefatos"].get("publicacao_info")
+        else "public"
+    ),
+)
+
+data_pub = st.date_input(
+    "Data de publicação (real ou planejada)",
+    value=datetime.now().date(),
+)
+
+hora_pub = st.time_input(
+    "Horário de publicação (opcional)",
+    value=datetime.now().time().replace(second=0, microsecond=0),
+)
+
+col_p1, col_p2 = st.columns(2)
+with col_p1:
+    if st.button("✅ Marcar como publicado (manual)"):
+        if not youtube_url_input.strip():
+            st.warning("Cole o link do vídeo no YouTube para marcar como publicado.")
+        else:
+            video["artefatos"]["youtube_url"] = youtube_url_input.strip()
+            video["artefatos"]["publicacao_info"] = {
+                "title": titulo_pub,
+                "description": desc_pub,
+                "tags": [t.strip() for t in tags_pub.split(",") if t.strip()],
+                "privacy": privacidade,
+                "published_at": datetime.combine(data_pub, hora_pub).isoformat(),
+                "registrado_em": datetime.now().isoformat(),
+                "modo": "manual",
+            }
+            video["status"]["5_publicacao"] = True
+            video["ultima_atualizacao"] = datetime.now().isoformat()
+            st.success("Publicação registrada e etapa 5 marcada como concluída.")
+
+with col_p2:
+    if st.button("🗑 Limpar informação de publicação"):
+        video["artefatos"]["youtube_url"] = None
+        video["artefatos"]["publicacao_info"] = {}
+        video["status"]["5_publicacao"] = False
+        video["ultima_atualizacao"] = datetime.now().isoformat()
+        st.success("Informações de publicação removidas deste vídeo.")
+
+st.markdown("---")
+
+# -------------------------------------------------------------------
+# 4. Resumo da publicação
+# -------------------------------------------------------------------
+st.subheader("📊 Resumo atual de publicação")
+
+if video["artefatos"].get("youtube_url"):
+    info = video["artefatos"].get("publicacao_info", {})
+    st.success(f"Vídeo publicado em: {video['artefatos']['youtube_url']}")
+    st.caption(
+        f"Privacidade: {info.get('privacy','-')}  \n"
+        f"Publicado em: {info.get('published_at','')[:16]}  \n"
+        f"Registrado no sistema em: {info.get('registrado_em','')[:16]}"
+    )
+else:
+    st.info(
+        "Nenhum link de publicação registrado ainda. "
+        "Depois que o vídeo estiver no YouTube, cole o link acima e marque como publicado."
+    )
+
+st.markdown("---")
+st.caption(
+    "No futuro, esta página pode ser expandida para upload automático via YouTube Data API "
+    "(método `videos.insert`) com OAuth2, caso você queira automatizar este passo."
+)
