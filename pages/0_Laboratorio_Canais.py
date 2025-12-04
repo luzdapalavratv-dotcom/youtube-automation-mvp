@@ -144,7 +144,9 @@ def analisar_canal_youtube(channel_id: str, top_n: int = 50):
                 id=",".join(ids),
             )
             stats_res = stats_req.execute()
-            stats_map = {it["id"]: it for it in stats_res.get("items", [])}
+            stats_map = {
+                it["id"]: it for it in stats_res.get("items", [])
+            }
 
         for v in vids_raw:
             vid = v["id"]["videoId"]
@@ -332,7 +334,7 @@ with tab1:
             "videos": canal_data.get("videos", {}),
         }
         st.success("Canal atualizado no sistema!")
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown("---")
     st.caption(
@@ -396,14 +398,13 @@ with tab2:
                 top10_long["link_video"] = (
                     "https://www.youtube.com/watch?v=" + top10_long["video_id"]
                 )
-
-                # Tabela numérica
                 st.dataframe(
-                    top10_long[["titulo", "views", "likes", "comments", "ctr_simulado"]],
+                    top10_long[
+                        ["titulo", "views", "likes", "comments", "ctr_simulado"]
+                    ],
                     use_container_width=True,
                 )
 
-                # Lista de links clicáveis
                 st.markdown("**Links dos vídeos longos:**")
                 for _, row in top10_long.iterrows():
                     url = row["link_video"]
@@ -419,7 +420,6 @@ with tab2:
                 top10_short["link_video"] = (
                     "https://www.youtube.com/watch?v=" + top10_short["video_id"]
                 )
-
                 st.dataframe(
                     top10_short[
                         ["titulo", "views", "likes", "comments", "ctr_simulado"]
@@ -484,7 +484,9 @@ with tab2:
                         atual = canal_cfg.get("preferencias_titulo", "")
                         novo = (atual + "\n\n" + sugestao).strip()
                         canal_cfg["preferencias_titulo"] = novo
-                        st.success("Diretrizes gravadas nas preferências de título do canal.")
+                        st.success(
+                            "Diretrizes gravadas nas preferências de título do canal."
+                        )
 
         else:
             st.info("Canal sem vídeos públicos para análise.")
