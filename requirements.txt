@@ -9,3 +9,4 @@ edge-tts
 moviepy
 groq
 piper-tts
+piper
