@@ -39,12 +39,13 @@ if not video_id or video_id not in videos:
 video = videos[video_id]
 
 # Garante estrutura de artefatos
+if "artefatos" not in video:
+    video["artefatos"] = {}
 if "audio_path" not in video["artefatos"]:
     video["artefatos"]["audio_path"] = None
 if "audio_info" not in video["artefatos"]:
     video["artefatos"]["audio_info"] = {}
 
-# Se existir roteiro salvo, vamos usar
 roteiro = video["artefatos"].get("roteiro")
 
 # -------------------------------------------------------------------
@@ -81,28 +82,38 @@ with st.sidebar:
 
         velocidade = st.slider("Velocidade (rate)", 0.5, 1.5, 1.0, 0.1)
         st.caption(
-            "Edge-TTS usa as vozes neurais da Microsoft. "
-            "Aqui está sendo usado apenas o controle de velocidade (rate) para maior estabilidade."  # [web:184][web:185]
-        )
+            "Edge-TTS usa vozes neurais online da Microsoft; aqui é usado apenas o controle de velocidade."
+        )  # [web:184][web:185]
 
     else:
         st.markdown("**Modelo Piper TTS (local)**")
+
+        # Caminho padrão bem explícito; ideal é setar PIPER_MODEL_PATH no ambiente
+        default_model = os.environ.get(
+            "PIPER_MODEL_PATH",
+            "/usr/local/share/piper-voices/pt_BR-faber-medium.onnx",
+        )  # [web:252][web:263]
+
         modelo_piper = st.text_input(
             "Caminho do modelo .onnx",
-            value=os.environ.get("PIPER_MODEL_PATH", "pt_BR-fernanda-medium.onnx"),
-            help="Ex.: /usr/share/piper/pt_BR-fernanda-medium.onnx",
+            value=default_model,
+            help=(
+                "Baixe um modelo pt_BR do repositório rhasspy/piper-voices e informe o caminho "
+                "completo para o arquivo .onnx (o .onnx.json deve ficar na mesma pasta)."
+            ),
         )
-        voz_label = f"Piper – {os.path.basename(modelo_piper)}"
-        voz_code = modelo_piper  # aqui representa o modelo
-        velocidade = 1.0  # Piper não usa este controle diretamente
+
+        voz_label = f"Piper – {os.path.basename(modelo_piper) or 'modelo não definido'}"
+        voz_code = modelo_piper
+        velocidade = 1.0
 
         st.caption(
-            "Piper é um TTS neural local. Certifique-se de ter o binário `piper` "
-            "instalado no servidor e o caminho do modelo correto."  # [web:223][web:229]
-        )
+            "Piper é TTS neural local. É preciso ter o executável `piper` instalado no PATH "
+            "e o modelo .onnx + .onnx.json presentes no caminho informado."
+        )  # [web:223][web:252]
 
 # -------------------------------------------------------------------
-# Funções TTS – Edge
+# TTS Edge
 # -------------------------------------------------------------------
 async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: float) -> None:
     texto = (texto or "").strip()
@@ -151,19 +162,14 @@ def run_tts_edge(texto: str, voz: str, rate: float) -> str | None:
         loop.close()
 
 # -------------------------------------------------------------------
-# Funções TTS – Piper (via CLI)
+# TTS Piper (CLI)
 # -------------------------------------------------------------------
 def piper_disponivel() -> bool:
-    """Verifica se o comando `piper` está disponível no PATH."""  # [web:223][web:234]
     from shutil import which
-    return which("piper") is not None
+    return which("piper") is not None  # [web:226]
 
 
 def run_tts_piper(texto: str, modelo_onnx: str) -> str | None:
-    """
-    Gera áudio usando Piper TTS via linha de comando.
-    Saída é um arquivo WAV; em seguida renomeado para .wav (player aceita).
-    """  # [web:223][web:224]
     import tempfile
 
     texto = (texto or "").strip()
@@ -171,12 +177,22 @@ def run_tts_piper(texto: str, modelo_onnx: str) -> str | None:
         st.error("Texto vazio para TTS.")
         return None
 
-    if not piper_disponivel():
-        st.error("O comando `piper` não foi encontrado no sistema. Instale Piper e tente novamente.")
+    if not modelo_onnx:
+        st.error("Nenhum caminho de modelo Piper informado.")
         return None
 
     if not os.path.exists(modelo_onnx):
-        st.error(f"Modelo Piper não encontrado: {modelo_onnx}")
+        st.error(
+            f"Modelo Piper não encontrado: {modelo_onnx}\n"
+            "Baixe um modelo pt_BR (ex.: pt_BR-faber-medium.onnx) e ajuste o caminho na sidebar."
+        )  # [web:252][web:263]
+        return None
+
+    if not piper_disponivel():
+        st.error(
+            "O comando `piper` não foi encontrado no sistema. "
+            "Instale o binário Piper e coloque-o no PATH do sistema."
+        )  # [web:223][web:226]
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -184,9 +200,9 @@ def run_tts_piper(texto: str, modelo_onnx: str) -> str | None:
 
     cmd = [
         "piper",
-        "-m",
+        "--model",
         modelo_onnx,
-        "-f",
+        "--output_file",
         output_path,
     ]
 
@@ -210,7 +226,7 @@ def run_tts_piper(texto: str, modelo_onnx: str) -> str | None:
         return None
 
 # -------------------------------------------------------------------
-# Conteúdo base para leitura
+# Texto base
 # -------------------------------------------------------------------
 st.subheader("📝 Texto que será narrado")
 
@@ -288,7 +304,6 @@ st.subheader("🎧 Player do áudio gerado")
 audio_path_salvo = video["artefatos"].get("audio_path")
 
 if audio_path_salvo and os.path.exists(audio_path_salvo):
-    # Edge gerou MP3; Piper gerou WAV. Streamlit detecta automaticamente. [web:143]
     st.audio(audio_path_salvo)
 
     col_d1, col_d2 = st.columns(2)
