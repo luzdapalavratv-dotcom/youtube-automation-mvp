@@ -1,164 +1,304 @@
 import streamlit as st
-from groq import Groq
-import json
-import re
+import requests
+import io
+from PIL import Image
+import time
+import random
 
-st.set_page_config(page_title="1_Roteiro_Viral", layout="wide")
-st.title("🎬 Gerador de Roteiro Viral para YouTube")
+st.set_page_config(page_title="2_Thumbnail_AB", layout="wide")
+st.title("🖼️ Gerador de Thumbnails A/B Testing")
 
-# Cliente Groq
-@st.cache_resource
-def get_groq_client():
-    return Groq(api_key=st.secrets["GROQ_API_KEY"])
+# --------------------------------------------------------------------
+# Session state inicial
+# --------------------------------------------------------------------
+if "roteiro_gerado" not in st.session_state or st.session_state.roteiro_gerado is None:
+    st.session_state.roteiro_gerado = {"titulo_video": "", "roteiro": {}}
 
-client = get_groq_client()
+if "thumbnail_a" not in st.session_state:
+    st.session_state.thumbnail_a = None
+if "thumbnail_b" not in st.session_state:
+    st.session_state.thumbnail_b = None
+if "prompt_a" not in st.session_state:
+    st.session_state.prompt_a = ""
+if "prompt_b" not in st.session_state:
+    st.session_state.prompt_b = ""
+if "vencedor" not in st.session_state:
+    st.session_state.vencedor = None
+if "thumbnails_historico" not in st.session_state:
+    st.session_state.thumbnails_historico = []
 
-# Sidebar
+# --------------------------------------------------------------------
+# Sidebar configurações
+# --------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ Configurações")
+    st.header("🎯 Estratégias de Thumbnail")
 
-    # MODELOS ATUALIZADOS (sem modelos deprecados)
-    model = st.selectbox(
-        "Modelo Groq",
+    estrategia = st.selectbox(
+        "Estratégia A/B",
         [
-            "llama-3.3-70b-versatile",  # substitui o antigo 70B
-            "llama-3.1-8b-instant",     # leve e rápido
+            "Emocional (rosto+texto)",
+            "Curiosidade (números)",
+            "Contraste (antes/depois)",
+            "Luxo (produtos)",
         ],
+    )
+
+    qualidade = st.selectbox(
+        "Modelo/qualidade (Pollinations)",
+        ["flux", "turbo", "stable-diffusion"],
         index=0,
     )
 
-    temperatura = st.slider("Temperatura (criatividade)", 0.0, 1.0, 0.7, 0.1)
-
-    nicho = st.selectbox(
-        "Nicho do canal",
-        ["Motivação", "Finanças", "Saúde", "Tecnologia", "Religião", "Negócios", "Educação"],
+    cores = st.multiselect(
+        "Esquema de cores",
+        ["Vermelho/Branco", "Azul/Dourado", "Preto/Amarelo", "Verde/Branco"],
+        default=["Vermelho/Branco"],
     )
 
-    duracao = st.selectbox("Duração alvo", ["5-8 min", "8-12 min", "12-15 min"], index=1)
-
-# Session state
-if "roteiro_gerado" not in st.session_state:
-    st.session_state.roteiro_gerado = None
-if "historico_roteiros" not in st.session_state:
-    st.session_state.historico_roteiros = []
-
-def gerar_roteiro_viral(tema, nicho, duracao, tom="impactante"):
-    minutos = duracao.split("-")[0]
-
-    prompt = f"""
-Você é um especialista em roteiros virais do YouTube com milhões de views.
-Crie um ROTEIRO PERFEITO para vídeo de {minutos} minutos no nicho "{nicho}".
-
-TEMA: {tema}
-
-ESTRUTURA:
-1. GANCHO
-2. REENGAJAMENTO 1
-3. PREPARAÇÃO
-4. CLÍMAX
-5. REENGAJAMENTO 2
-6. CONCLUSÃO + CTA
-
-Retorne em JSON com:
-{{
-  "titulo_video": "...",
-  "descricao": "...",
-  "tags": ["tag1","tag2"],
-  "roteiro": {{
-    "1_GANCHO": "...",
-    "2_REENGAJAMENTO_1": "...",
-    "3_PREPARACAO": "...",
-    "4_CLIMAX": "...",
-    "5_REENGAJAMENTO_2": "...",
-    "6_CONCLUSAO_CTA": "..."
-  }}
-}}
-"""
-
+# --------------------------------------------------------------------
+# Funções de geração
+# --------------------------------------------------------------------
+def gerar_thumbnail_pollinations(prompt, width=1280, height=720, model="flux"):
+    """Gera thumbnail via Pollinations.ai (retorna PIL.Image ou None)."""
+    url = (
+        f"https://image.pollinations.ai/prompt/{prompt}"
+        f"?width={width}&height={height}&model={model}&nologo=true&enhance=true"
+    )
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperatura,
-            max_tokens=4096,
+        resp = requests.get(url, timeout=60)
+        if resp.status_code == 200:
+            return Image.open(io.BytesIO(resp.content))
+        return None
+    except Exception:
+        return None
+
+
+def criar_prompts_thumbnail(roteiro_titulo, estrategia):
+    base = roteiro_titulo or "Vídeo viral YouTube"
+
+    if estrategia.startswith("Emocional"):
+        return (
+            f"closeup dramatic face shocked expression, bold text '{base[:30]}', "
+            "youtube thumbnail, red background, high contrast, cinematic lighting"
         )
-        conteudo = resp.choices[0].message.content.strip()
+    if estrategia.startswith("Curiosidade"):
+        return (
+            f"mysterious scene with big number and text '{base[:25]}', "
+            "yellow and black high contrast, viral youtube thumbnail, 3d text"
+        )
+    if estrategia.startswith("Contraste"):
+        return (
+            f"split screen before and after dramatic transformation, '{base[:20]}', "
+            "strong contrast colors, bold typography, youtube thumbnail"
+        )
+    if estrategia.startswith("Luxo"):
+        return (
+            f"luxury style, gold lighting, product or wealth concept, text '{base[:25]}', "
+            "black and gold colors, professional youtube thumbnail"
+        )
+    return f"youtube thumbnail, {base}, high contrast, bold text, cinematic lighting"
 
-        try:
-            return json.loads(conteudo)
-        except Exception:
-            m = re.search(r"\{.*\}", conteudo, re.DOTALL)
-            if m:
-                return json.loads(m.group())
-            return {"erro": "Falha ao converter resposta em JSON", "raw": conteudo}
-    except Exception as e:
-        return {"erro": str(e)}
 
-# UI principal
-col1, col2 = st.columns([2, 1])
+# --------------------------------------------------------------------
+# Interface principal
+# --------------------------------------------------------------------
+col1, col2 = st.columns([1.5, 1])
 
 with col1:
-    st.header("📝 Gerar Novo Roteiro")
+    st.header("🎬 Roteiro Selecionado")
 
-    tema = st.text_area(
-        "Qual o tema do seu vídeo?",
-        placeholder="Ex: 5 segredos que os ricos usam para ficar mais ricos",
-        height=100,
-    )
+    roteiro = st.session_state.roteiro_gerado or {}
+    titulo_base = roteiro.get("titulo_video", "")
 
-    bt1, bt2 = st.columns(2)
-    with bt1:
-        if st.button("🚀 Gerar Roteiro Viral", type="primary"):
-            if not tema.strip():
-                st.warning("Informe um tema antes de gerar.")
-            else:
-                with st.spinner("Criando roteiro viral com IA..."):
-                    resultado = gerar_roteiro_viral(tema, nicho, duracao)
-                    st.session_state.roteiro_gerado = resultado
-                    st.session_state.historico_roteiros.append(resultado)
-                    st.rerun()
-    with bt2:
-        if st.button("🔄 Limpar roteiro atual"):
-            st.session_state.roteiro_gerado = None
-            st.rerun()
-
-with col2:
-    st.header("📊 Configuração Atual")
-    st.info(f"**Nicho:** {nicho}")
-    st.info(f"**Duração:** {duracao}")
-    st.info(f"**Modelo:** {model}")
-    st.info(f"**Temperatura:** {temperatura:.1f}")
-
-# Exibição do roteiro
-roteiro = st.session_state.roteiro_gerado
-if roteiro and "erro" not in roteiro:
-    st.header("✅ Roteiro Viral Gerado")
-
-    c_tit, c_dl = st.columns([2, 1])
-    with c_tit:
-        st.markdown(f"### 🎥 {roteiro.get('titulo_video', 'Título gerado')}")
-        st.caption(roteiro.get("descricao", ""))
-    with c_dl:
-        txt = f"Título: {roteiro.get('titulo_video','')}\n\n"
-        txt += "ROTEIRO:\n\n"
-        for secao, texto in roteiro.get("roteiro", {}).items():
-            txt += f"{secao}\n{texto}\n\n"
-
-        st.download_button(
-            "💾 Download .txt",
-            data=txt,
-            file_name="roteiro_youtube.txt",
-            mime="text/plain",
+    if titulo_base:
+        st.markdown(f"### **{titulo_base}**")
+        novo_titulo = st.text_input(
+            "Editar título para thumbnail",
+            value=titulo_base[:50],
+        )
+    else:
+        novo_titulo = st.text_input(
+            "Título do vídeo",
+            "Exemplo de Thumbnail Viral",
         )
 
-    for i, (secao, texto) in enumerate(roteiro.get("roteiro", {}).items(), 1):
-        with st.expander(f"{secao}", expanded=(i == 1)):
-            st.markdown(texto)
+with col2:
+    st.header("⚙️ Configuração Atual")
+    st.info(f"**Estratégia:** {estrategia}")
+    st.info(f"**Modelo:** {qualidade}")
+    st.info(f"**Cores:** {', '.join(cores) if cores else 'Padrão'}")
 
-    if "tags" in roteiro:
-        st.subheader("🏷️ Tags sugeridas")
-        st.code(", ".join(roteiro["tags"]))
-elif roteiro and "erro" in roteiro:
-    st.error(f"❌ Erro: {roteiro['erro']}")
-    if "model_decommissioned" in roteiro["erro"]:
-        st.info("Troque o modelo no selectbox para um dos modelos recomendados (ex: llama-3.3-70b-versatile).")
+# --------------------------------------------------------------------
+# Botões de geração A / B
+# --------------------------------------------------------------------
+col_a, col_b, _ = st.columns([1, 1, 1])
+
+with col_a:
+    if st.button("🎨 Gerar Thumbnail A", type="primary"):
+        with st.spinner("Gerando Thumbnail A com IA..."):
+            prompt_a = criar_prompts_thumbnail(novo_titulo, estrategia)
+            img_a = gerar_thumbnail_pollinations(prompt_a, model=qualidade)
+            if img_a:
+                st.session_state.thumbnail_a = img_a
+                st.session_state.prompt_a = prompt_a
+                st.session_state.vencedor = None
+                st.success("Thumbnail A gerada!")
+            else:
+                st.error("Falha ao gerar Thumbnail A. Tente novamente.")
+
+with col_b:
+    if st.button("🖼️ Gerar Thumbnail B", type="secondary"):
+        with st.spinner("Gerando Thumbnail B com IA..."):
+            prompt_b = criar_prompts_thumbnail(novo_titulo, estrategia) + ", different angle, more dramatic"
+            img_b = gerar_thumbnail_pollinations(prompt_b, model=qualidade)
+            if img_b:
+                st.session_state.thumbnail_b = img_b
+                st.session_state.prompt_b = prompt_b
+                st.session_state.vencedor = None
+                st.success("Thumbnail B gerada!")
+            else:
+                st.error("Falha ao gerar Thumbnail B. Tente novamente.")
+
+# --------------------------------------------------------------------
+# PREVIEW RÁPIDO (ICONS) IMEDIATO APÓS GERAÇÃO
+# --------------------------------------------------------------------
+st.subheader("👁️ Preview rápido (miniaturas)")
+
+prev_col_a, prev_col_b = st.columns(2)
+
+with prev_col_a:
+    st.caption("Preview A")
+    if isinstance(st.session_state.thumbnail_a, Image.Image):
+        st.image(st.session_state.thumbnail_a, width=120)
+    else:
+        st.text("Sem imagem A")
+
+with prev_col_b:
+    st.caption("Preview B")
+    if isinstance(st.session_state.thumbnail_b, Image.Image):
+        st.image(st.session_state.thumbnail_b, width=120)
+    else:
+        st.text("Sem imagem B")
+
+st.markdown("---")
+
+# --------------------------------------------------------------------
+# Exibição A/B e votação (tamanho maior)
+# --------------------------------------------------------------------
+st.header("👀 Teste A/B – escolha a melhor")
+
+img_a = st.session_state.thumbnail_a
+img_b = st.session_state.thumbnail_b
+
+if isinstance(img_a, Image.Image) or isinstance(img_b, Image.Image):
+    c_img1, c_img2, c_vote = st.columns([1, 1, 1])
+
+    with c_img1:
+        st.subheader("Thumbnail A (grande)")
+        if isinstance(img_a, Image.Image):
+            st.image(img_a, use_column_width=True)
+            if st.session_state.prompt_a:
+                st.caption(st.session_state.prompt_a[:90] + "...")
+        else:
+            st.info("Ainda não gerada.")
+
+        if st.button("⭐ Voto A (melhor CTR)", key="voto_a"):
+            if isinstance(img_a, Image.Image):
+                st.session_state.vencedor = "A"
+                st.success("Thumbnail A marcada como vencedora.")
+            else:
+                st.warning("Gere a Thumbnail A primeiro.")
+
+    with c_img2:
+        st.subheader("Thumbnail B (grande)")
+        if isinstance(img_b, Image.Image):
+            st.image(img_b, use_column_width=True)
+            if st.session_state.prompt_b:
+                st.caption(st.session_state.prompt_b[:90] + "...")
+        else:
+            st.info("Ainda não gerada.")
+
+        if st.button("⭐ Voto B (melhor CTR)", key="voto_b"):
+            if isinstance(img_b, Image.Image):
+                st.session_state.vencedor = "B"
+                st.success("Thumbnail B marcada como vencedora.")
+            else:
+                st.warning("Gere a Thumbnail B primeiro.")
+
+    # Downloads
+    st.subheader("💾 Download das imagens")
+
+    c_dl1, c_dl2 = st.columns(2)
+    with c_dl1:
+        if isinstance(img_a, Image.Image):
+            buf_a = io.BytesIO()
+            img_a.save(buf_a, format="PNG")
+            st.download_button(
+                "📥 Download A",
+                data=buf_a.getvalue(),
+                file_name=f"thumbnail_A_{novo_titulo[:20]}.png",
+                mime="image/png",
+            )
+    with c_dl2:
+        if isinstance(img_b, Image.Image):
+            buf_b = io.BytesIO()
+            img_b.save(buf_b, format="PNG")
+            st.download_button(
+                "📥 Download B",
+                data=buf_b.getvalue(),
+                file_name=f"thumbnail_B_{novo_titulo[:20]}.png",
+                mime="image/png",
+            )
+else:
+    st.info("Gere pelo menos uma thumbnail A ou B para iniciar o teste A/B.")
+
+# --------------------------------------------------------------------
+# CTR estimado
+# --------------------------------------------------------------------
+st.subheader("📈 Previsão de CTR (simulada)")
+if st.session_state.vencedor in ["A", "B"]:
+    ctr_estimado = random.uniform(8.5, 15.2)
+    st.metric("CTR estimado", f"{ctr_estimado:.1f}%", "↑ 2.3%")
+else:
+    st.caption("Escolha um vencedor A ou B para ver uma previsão simulada de CTR.")
+
+# --------------------------------------------------------------------
+# Histórico de thumbnails
+# --------------------------------------------------------------------
+st.subheader("🖼️ Histórico recente")
+
+if st.button("➡️ Salvar no histórico atual"):
+    if isinstance(img_a, Image.Image) or isinstance(img_b, Image.Image):
+        st.session_state.thumbnails_historico.append(
+            {
+                "titulo": novo_titulo,
+                "img_a": img_a if isinstance(img_a, Image.Image) else None,
+                "img_b": img_b if isinstance(img_b, Image.Image) else None,
+                "vencedor": st.session_state.vencedor,
+            }
+        )
+        st.success("Salvo no histórico.")
+    else:
+        st.warning("Gere pelo menos uma thumbnail antes de salvar.")
+
+hist = st.session_state.thumbnails_historico[-4:]
+
+if hist:
+    for i, thumb in enumerate(hist):
+        st.markdown(f"**{thumb.get('titulo','')[:40]}...**")
+        c1, c2 = st.columns(2)
+        with c1:
+            if isinstance(thumb.get("img_a"), Image.Image):
+                st.image(thumb["img_a"], width=200)
+            else:
+                st.caption("A: (sem imagem)")
+        with c2:
+            if isinstance(thumb.get("img_b"), Image.Image):
+                st.image(thumb["img_b"], width=200)
+            else:
+                st.caption("B: (sem imagem)")
+        st.caption(f"Vencedor: {thumb.get('vencedor', 'N/A')}")
+        st.divider()
+
+st.markdown("---")
+st.caption("Próxima etapa: 3_Audio_TTS.py – gerar áudio para o roteiro selecionado.")
