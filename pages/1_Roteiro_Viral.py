@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import io
 from PIL import Image
-import time
 import random
 
 st.set_page_config(page_title="2_Thumbnail_AB", layout="wide")
@@ -55,6 +54,15 @@ with st.sidebar:
         default=["Vermelho/Branco"],
     )
 
+    st.markdown("---")
+    st.header("🔤 Texto na thumbnail")
+    incluir_texto = st.radio(
+        "Adicionar texto escrito na thumbnail?",
+        ["Com texto", "Sem texto"],
+        index=0,
+    )
+    usar_texto = incluir_texto == "Com texto"
+
 # --------------------------------------------------------------------
 # Funções de geração
 # --------------------------------------------------------------------
@@ -73,31 +81,45 @@ def gerar_thumbnail_pollinations(prompt, width=1280, height=720, model="flux"):
         return None
 
 
-def criar_prompts_thumbnail(roteiro_titulo, estrategia):
+def criar_prompts_thumbnail(roteiro_titulo, estrategia, usar_texto: bool, variante: str = ""):
     base = roteiro_titulo or "Vídeo viral YouTube"
 
+    # Parte de texto (opcional)
+    if usar_texto:
+        texto_snippet = f"with bold text '{base[:30]}'"
+    else:
+        texto_snippet = "no text, focus only on image composition"
+
     if estrategia.startswith("Emocional"):
-        return (
-            f"closeup dramatic face shocked expression, bold text '{base[:30]}', "
+        core = (
+            f"closeup dramatic face shocked expression, {texto_snippet}, "
             "youtube thumbnail, red background, high contrast, cinematic lighting"
         )
-    if estrategia.startswith("Curiosidade"):
-        return (
-            f"mysterious scene with big number and text '{base[:25]}', "
-            "yellow and black high contrast, viral youtube thumbnail, 3d text"
+    elif estrategia.startswith("Curiosidade"):
+        core = (
+            f"mysterious scene, big number, {texto_snippet}, "
+            "yellow and black high contrast, viral youtube thumbnail, 3d style"
         )
-    if estrategia.startswith("Contraste"):
-        return (
-            f"split screen before and after dramatic transformation, '{base[:20]}', "
-            "strong contrast colors, bold typography, youtube thumbnail"
+    elif estrategia.startswith("Contraste"):
+        core = (
+            f"split screen before and after dramatic transformation, {texto_snippet}, "
+            "strong contrast colors, bold composition, youtube thumbnail"
         )
-    if estrategia.startswith("Luxo"):
-        return (
-            f"luxury style, gold lighting, product or wealth concept, text '{base[:25]}', "
-            "black and gold colors, professional youtube thumbnail"
+    elif estrategia.startswith("Luxo"):
+        core = (
+            f"luxury style, gold lighting, wealth or success concept, {texto_snippet}, "
+            "black and gold colors, professional cinematic look"
         )
-    return f"youtube thumbnail, {base}, high contrast, bold text, cinematic lighting"
+    else:
+        core = (
+            f"youtube thumbnail, {texto_snippet}, "
+            "high contrast, bold composition, cinematic lighting"
+        )
 
+    if variante:
+        core += f", {variante}"
+
+    return core
 
 # --------------------------------------------------------------------
 # Interface principal
@@ -127,6 +149,7 @@ with col2:
     st.info(f"**Estratégia:** {estrategia}")
     st.info(f"**Modelo:** {qualidade}")
     st.info(f"**Cores:** {', '.join(cores) if cores else 'Padrão'}")
+    st.info(f"**Texto na thumbnail:** {'Com texto' if usar_texto else 'Sem texto'}")
 
 # --------------------------------------------------------------------
 # Botões de geração A / B
@@ -136,7 +159,7 @@ col_a, col_b, _ = st.columns([1, 1, 1])
 with col_a:
     if st.button("🎨 Gerar Thumbnail A", type="primary"):
         with st.spinner("Gerando Thumbnail A com IA..."):
-            prompt_a = criar_prompts_thumbnail(novo_titulo, estrategia)
+            prompt_a = criar_prompts_thumbnail(novo_titulo, estrategia, usar_texto)
             img_a = gerar_thumbnail_pollinations(prompt_a, model=qualidade)
             if img_a:
                 st.session_state.thumbnail_a = img_a
@@ -149,7 +172,9 @@ with col_a:
 with col_b:
     if st.button("🖼️ Gerar Thumbnail B", type="secondary"):
         with st.spinner("Gerando Thumbnail B com IA..."):
-            prompt_b = criar_prompts_thumbnail(novo_titulo, estrategia) + ", different angle, more dramatic"
+            prompt_b = criar_prompts_thumbnail(
+                novo_titulo, estrategia, usar_texto, "different angle, more dramatic"
+            )
             img_b = gerar_thumbnail_pollinations(prompt_b, model=qualidade)
             if img_b:
                 st.session_state.thumbnail_b = img_b
@@ -160,7 +185,7 @@ with col_b:
                 st.error("Falha ao gerar Thumbnail B. Tente novamente.")
 
 # --------------------------------------------------------------------
-# PREVIEW RÁPIDO (ICONS) IMEDIATO APÓS GERAÇÃO
+# PREVIEW RÁPIDO
 # --------------------------------------------------------------------
 st.subheader("👁️ Preview rápido (miniaturas)")
 
@@ -183,7 +208,7 @@ with prev_col_b:
 st.markdown("---")
 
 # --------------------------------------------------------------------
-# Exibição A/B e votação (tamanho maior)
+# Exibição A/B grande + votação
 # --------------------------------------------------------------------
 st.header("👀 Teste A/B – escolha a melhor")
 
@@ -275,6 +300,7 @@ if st.button("➡️ Salvar no histórico atual"):
                 "img_a": img_a if isinstance(img_a, Image.Image) else None,
                 "img_b": img_b if isinstance(img_b, Image.Image) else None,
                 "vencedor": st.session_state.vencedor,
+                "usar_texto": usar_texto,
             }
         )
         st.success("Salvo no histórico.")
@@ -297,7 +323,7 @@ if hist:
                 st.image(thumb["img_b"], width=200)
             else:
                 st.caption("B: (sem imagem)")
-        st.caption(f"Vencedor: {thumb.get('vencedor', 'N/A')}")
+        st.caption(f"Vencedor: {thumb.get('vencedor', 'N/A')} | Texto: {'Sim' if thumb.get('usar_texto') else 'Não'}")
         st.divider()
 
 st.markdown("---")
