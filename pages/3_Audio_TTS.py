@@ -1,7 +1,6 @@
 import streamlit as st
 import asyncio
 import edge_tts
-import io
 import os
 from datetime import datetime
 
@@ -70,42 +69,57 @@ with st.sidebar:
     voz_code = vozes[voz_label]
 
     velocidade = st.slider("Velocidade (rate)", 0.5, 1.5, 1.0, 0.1)
-    pitch = st.slider("Pitch (tom)", -10, 10, 0)
-    volume = st.slider("Volume (dB)", -10, 10, 0)
+    pitch = st.slider("Pitch (tom) – desativado no momento", -10, 10, 0)
+    volume = st.slider("Volume (dB) – desativado no momento", -10, 10, 0)
 
-    st.caption("Edge-TTS usa as vozes neurais da Microsoft (alta qualidade, gratuito).")  # [web:184][web:185]
+    st.caption(
+        "Edge-TTS usa as vozes neurais da Microsoft (alta qualidade, gratuito). "
+        "Ajuste de pitch/volume via SSML pode falhar em alguns ambientes, por isso "
+        "esta versão usa apenas controle de velocidade (rate)."  # [web:184][web:185]
+    )
 
 # -------------------------------------------------------------------
 # Funções TTS (Edge-TTS) – assíncrono
 # -------------------------------------------------------------------
-async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: float, pitch: int, volume: int):
+async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: float) -> None:
     """
     Gera áudio com Edge-TTS.
-    Rate: multiplicador de velocidade (1.0 = normal).
-    Pitch/volume: ajustados via SSML simples.
-    """  # [web:184]
+    Usa apenas 'rate' (velocidade) para reduzir risco de erro 'No audio received'. [web:184]
+    """
+    # Garante texto não vazio
+    texto = (texto or "").strip()
+    if not texto:
+        raise ValueError("Texto vazio para TTS.")
 
-    rate_percent = int((rate - 1.0) * 100)  # ex.: 1.1 -> +10%
+    # Limita variação de velocidade para faixa segura
+    rate_percent = max(-50, min(50, int((rate - 1.0) * 100)))
     rate_str = f"{rate_percent:+d}%"
-    pitch_str = f"{pitch:+d}Hz"
-    volume_str = f"{volume:+d}dB"
 
     ssml = f"""
 <speak version="1.0" xml:lang="pt-BR">
-  <prosody rate="{rate_str}" pitch="{pitch_str}" volume="{volume_str}">
+  <prosody rate="{rate_str}">
     {texto}
   </prosody>
 </speak>
 """.strip()
 
-    # A biblioteca aceita o texto SSML direto, sem parâmetro 'ssml' [web:184]
     communicate = edge_tts.Communicate(ssml, voz)
     await communicate.save(output_path)
 
 
-def run_tts_sync(texto: str, voz: str, rate: float, pitch: int, volume: int) -> str | None:
+def run_tts_sync(texto: str, voz: str, rate: float) -> str | None:
     """Executa Edge-TTS em loop isolado e retorna caminho do arquivo MP3."""
     import tempfile
+
+    texto = (texto or "").strip()
+    if not texto:
+        st.error("Texto vazio para TTS.")
+        return None
+
+    # Evita textos gigantes que podem falhar na API
+    if len(texto) > 8000:
+        texto = texto[:8000]
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -113,7 +127,7 @@ def run_tts_sync(texto: str, voz: str, rate: float, pitch: int, volume: int) -> 
         output_path = tmp.name
 
     try:
-        loop.run_until_complete(gerar_audio_edge_tts(texto, voz, output_path, rate, pitch, volume))
+        loop.run_until_complete(gerar_audio_edge_tts(texto, voz, output_path, rate))
         return output_path
     except Exception as e:
         st.error(f"Erro ao gerar áudio TTS: {e}")
@@ -151,9 +165,6 @@ texto_manual = st.text_area(
     height=250,
 )
 
-if not texto_manual.strip():
-    st.warning("Informe algum texto para gerar o áudio.")
-
 # -------------------------------------------------------------------
 # Geração do áudio
 # -------------------------------------------------------------------
@@ -162,21 +173,22 @@ st.subheader("🎙 Gerar áudio")
 col_g1, col_g2 = st.columns(2)
 with col_g1:
     if st.button("🚀 Gerar áudio TTS", type="primary"):
-        if not texto_manual.strip():
+        texto_limpo = (texto_manual or "").strip()
+        if not texto_limpo:
             st.warning("Texto vazio. Preencha antes de gerar.")
         else:
             with st.spinner("Gerando áudio com Edge-TTS..."):
-                audio_path = run_tts_sync(texto_manual, voz_code, velocidade, pitch, volume)
+                audio_path = run_tts_sync(texto_limpo, voz_code, velocidade)
                 if audio_path and os.path.exists(audio_path):
                     video["artefatos"]["audio_path"] = audio_path
                     video["artefatos"]["audio_info"] = {
                         "voz": voz_label,
                         "voz_code": voz_code,
                         "velocidade": velocidade,
-                        "pitch": pitch,
-                        "volume": volume,
+                        "pitch": 0,
+                        "volume": 0,
                         "gerado_em": datetime.now().isoformat(),
-                        "texto_usado": texto_manual[:5000],  # guarda um resumo
+                        "texto_usado": texto_limpo[:5000],
                     }
                     video["status"]["3_audio"] = True
                     video["ultima_atualizacao"] = datetime.now().isoformat()
@@ -215,9 +227,7 @@ if audio_path_salvo and os.path.exists(audio_path_salvo):
         st.markdown("**Configurações usadas:**")
         st.caption(
             f"Voz: {info.get('voz','-')}  \n"
-            f"Velocidade: {info.get('velocidade','-')}x  \n"
-            f"Pitch: {info.get('pitch','-')}  \n"
-            f"Volume: {info.get('volume','-')} dB"
+            f"Velocidade: {info.get('velocidade','-')}x"
         )
 else:
     st.info("Nenhum áudio disponível ainda para este vídeo. Gere um áudio acima.")
