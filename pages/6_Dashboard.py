@@ -1,238 +1,266 @@
 import streamlit as st
-import googleapiclient.discovery
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import datetime
 
-st.set_page_config(page_title="6_Dashboard", layout="wide")
-st.title("📊 Dashboard Analytics YouTube")
+st.set_page_config(page_title="6 – Dashboard de Resultados", layout="wide")
+st.title("📊 6 – Dashboard de Resultados dos Vídeos")
 
-# Inicializar YouTube API
-@st.cache_resource
-def get_youtube_service():
-    youtube = googleapiclient.discovery.build(
-        "youtube", "v3", developerKey=st.secrets["YOUTUBE_API_KEY"]
-    )
-    return youtube
+# -------------------------------------------------------------------
+# Integra com o "banco" e seleção do monitor
+# -------------------------------------------------------------------
+def criar_db_vazio():
+    return {"canais": {}}
 
-youtube = get_youtube_service()
+if "db" not in st.session_state:
+    st.session_state.db = criar_db_vazio()
+db = st.session_state.db
 
-# Sidebar filtros
+if "canal_atual_id" not in st.session_state:
+    st.session_state.canal_atual_id = None
+if "video_atual_id" not in st.session_state:
+    st.session_state.video_atual_id = None
+
+canal_id = st.session_state.canal_atual_id
+
+if not canal_id or canal_id not in db["canais"]:
+    st.error("Nenhum canal selecionado. Vá ao app principal (monitor) e escolha um canal.")
+    st.stop()
+
+canal = db["canais"][canal_id]
+videos = canal["videos"]
+
+# -------------------------------------------------------------------
+# Sidebar – seleção de vídeo e modo de visualização
+# -------------------------------------------------------------------
 with st.sidebar:
-    st.header("🔍 Filtros")
-    periodo = st.selectbox("Período", ["7 dias", "30 dias", "90 dias", "Todo período"])
-    
-    if periodo == "7 dias":
-        dias = 7
-    elif periodo == "30 dias":
-        dias = 30
-    elif periodo == "90 dias":
-        dias = 90
-    else:
-        dias = 365
-    
-    canais = st.multiselect("Canais", ["TODOS"], default=["TODOS"])
+    st.header("📺 Contexto")
+    st.markdown(f"**Canal:** {canal.get('nome','')}")
+    st.markdown(f"**Nicho:** {canal.get('nicho','')}")
 
-# Funções para buscar dados YouTube Analytics
-@st.cache_data(ttl=1800)  # Cache 30min
-def buscar_videos_recentes(dias=30):
-    """Busca vídeos recentes do canal"""
-    try:
-        request = youtube.search().list(
-            part="id,snippet",
-            channelId="SEU_CHANNEL_ID",  # Substitua pelo seu Channel ID
-            maxResults=50,
-            order="date",
-            type="video"
-        )
-        response = request.execute()
-        
-        videos = []
-        for item in response['items']:
-            video_id = item['id']['videoId']
-            titulo = item['snippet']['title'][:50]
-            publicado = item['snippet']['publishedAt']
-            videos.append({"video_id": video_id, "titulo": titulo, "publicado": publicado})
-        
-        return pd.DataFrame(videos)
-    except:
-        return pd.DataFrame()
+    st.markdown("---")
+    st.header("🎯 Escopo")
 
-@st.cache_data(ttl=1800)
-def buscar_analytics_video(video_id):
-    """Busca métricas detalhadas de um vídeo"""
-    try:
-        request = youtube.videos().list(
-            part="statistics",
-            id=video_id
+    modo = st.radio(
+        "O que deseja ver?",
+        ["Resumo de todos os vídeos", "Detalhe de um vídeo"],
+        index=0,
+    )
+
+    video_id = None
+    if modo == "Detalhe de um vídeo" and videos:
+        vids_ids = list(videos.keys())
+        vids_titulos = [videos[vid]["titulo"] for vid in vids_ids]
+        idx_video = st.selectbox(
+            "Vídeo",
+            options=range(len(vids_ids)),
+            format_func=lambda i: vids_titulos[i],
+            index=0,
         )
-        response = request.execute()
-        
-        if response['items']:
-            stats = response['items'][0]['statistics']
-            return {
-                'views': int(stats.get('viewCount', 0)),
-                'likes': int(stats.get('likeCount', 0)),
-                'comments': int(stats.get('commentCount', 0)),
-                'ctr': np.random.uniform(5, 15)  # Simulação CTR
+        video_id = vids_ids[idx_video]
+        st.session_state.video_atual_id = video_id
+
+# -------------------------------------------------------------------
+# Helper – montar DataFrame com informações de publicação
+# -------------------------------------------------------------------
+def montar_df_videos(canal_obj):
+    linhas = []
+    for vid, v in canal_obj["videos"].items():
+        pub_info = v["artefatos"].get("publicacao_info", {}) if v.get("artefatos") else {}
+        url = v["artefatos"].get("youtube_url") if v.get("artefatos") else None
+
+        linhas.append(
+            {
+                "video_id": vid,
+                "Título": v.get("titulo", ""),
+                "Publicado?": "Sim" if v["status"].get("5_publicacao") else "Não",
+                "URL YouTube": url or "",
+                "Privacidade": pub_info.get("privacy", "-"),
+                "Data publicação": pub_info.get("published_at", "")[:16],
+                "Criado no sistema": v.get("criado_em", "")[:16],
+                # Campos para futuras métricas (manual ou API)
+                "Views (manual)": pub_info.get("manual_views", None),
+                "CTR (manual)": pub_info.get("manual_ctr", None),
+                "Watch time (min, manual)": pub_info.get("manual_watch_time", None),
             }
-        return {}
-    except:
-        return {}
+        )
+    if not linhas:
+        return pd.DataFrame()
+    return pd.DataFrame(linhas)
 
-# KPIs principais
-def mostrar_kpis(df_videos):
-    """Dashboard com KPIs principais"""
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_videos = len(df_videos)
-    total_views = df_videos['views'].sum() if 'views' not in df_videos.empty else 0
-    total_likes = df_videos['likes'].sum() if 'likes' in df_videos.columns else 0
-    media_ctr = df_videos['ctr'].mean() if 'ctr' in df_videos.columns else 0
-    
-    with col1:
-        st.metric("🎬 Total Vídeos", total_videos, "+2")
-    with col2:
-        st.metric("👀 Total Visualizações", f"{total_views:,}", "+15%")
-    with col3:
-        st.metric("❤️ Total Likes", f"{total_likes:,}", "+23%")
-    with col4:
-        st.metric("📈 CTR Médio", f"{media_ctr:.1f}%", "↑0.8%")
+# -------------------------------------------------------------------
+# Modo 1 – Resumo de todos os vídeos
+# -------------------------------------------------------------------
+if modo == "Resumo de todos os vídeos":
+    st.subheader("📚 Visão geral dos vídeos do canal")
 
-# Layout principal
-tab1, tab2, tab3 = st.tabs(["📈 KPIs Gerais", "📊 Performance Vídeos", "🎯 Previsões"])
+    df = montar_df_videos(canal)
+    if df.empty:
+        st.info("Ainda não há vídeos cadastrados para este canal.")
+        st.stop()
 
-with tab1:
-    st.header("📊 KPIs Pipeline Automação")
-    
-    # Simular dados da pipeline (substituir por dados reais)
-    pipeline_data = {
-        'roteiros_gerados': 12,
-        'thumbnails_criados': 24,
-        'audios_produzidos': 8,
-        'videos_publicados': 6,
-        'tempo_medio_producao': '18min',
-        'custo_total': 'R$0,00'
-    }
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col5, col6 = st.columns(2)
-    
-    with col1:
-        st.metric("📝 Roteiros", pipeline_data['roteiros_gerados'])
-    with col2:
-        st.metric("🖼️ Thumbnails", pipeline_data['thumbnails_criados'])
-    with col3:
-        st.metric("🎙️ Áudios", pipeline_data['audios_produzidos'])
-    with col4:
-        st.metric("🎬 Vídeos", pipeline_data['videos_publicados'])
-    
-    with col5:
-        st.metric("⏱️ Tempo Médio", pipeline_data['tempo_medio_producao'])
-    with col6:
-        st.metric("💰 Custo Total", pipeline_data['custo_total'])
+    # KPIs simples
+    total_videos = len(df)
+    publicados = (df["Publicado?"] == "Sim").sum()
+    nao_pub = total_videos - publicados
 
-with tab2:
-    st.header("🎥 Performance dos Últimos Vídeos")
-    
-    # Buscar dados reais
-    df_videos = buscar_videos_recentes(dias)
-    
-    if not df_videos.empty:
-        # Adicionar métricas simuladas
-        df_videos['views'] = np.random.randint(100, 50000, len(df_videos))
-        df_videos['likes'] = df_videos['views'] * np.random.uniform(0.02, 0.08)
-        df_videos['ctr'] = np.random.uniform(4, 18, len(df_videos))
-        df_videos['publicado'] = pd.to_datetime(df_videos['publicado'])
-        
-        # Ordenar por views
-        df_videos = df_videos.sort_values('views', ascending=False).head(10)
-        
-        # Gráfico de barras
-        fig = px.bar(df_videos.head(10), 
-                    x='views', y='titulo', 
-                    orientation='h',
-                    title="Top 10 Vídeos - Visualizações",
-                    color='views',
-                    color_continuous_scale='viridis')
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Tabela detalhada
-        st.subheader("📋 Detalhes dos Vídeos")
-        df_display = df_videos[['titulo', 'views', 'likes', 'ctr']].copy()
-        df_display['likes'] = df_display['likes'].astype(int)
-        df_display['views'] = df_display['views'].astype(int)
-        st.dataframe(df_display, use_container_width=True)
-        
-        mostrar_kpis(df_videos)
-    
-    else:
-        st.info("👈 Configure seu Channel ID para ver dados reais")
+    col_k1, col_k2, col_k3 = st.columns(3)
+    with col_k1:
+        st.metric("Vídeos no sistema", total_videos)
+    with col_k2:
+        st.metric("Vídeos publicados", publicados)
+    with col_k3:
+        st.metric("A publicar", nao_pub)
 
-with tab3:
-    st.header("🎯 Previsões e Recomendações IA")
-    
-    # Simulação de previsões
-    previsoes = {
-        'proxima_semana_views': 12500,
-        'crescimento_ctr': '+1.2%',
-        'recomendacao_nicho': 'Finanças Pessoais',
-        'melhor_horario': '18h-20h',
-        'thumb_vencedor_tipo': 'Emocional'
-    }
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.metric("📈 Views Próxima Semana", f"{previsoes['proxima_semana_views']:,}")
-        st.metric("📊 Melhora CTR", previsoes['crescimento_ctr'])
-    
-    with col2:
-        st.info(f"🎯 **Nicho quente:** {previsoes['recomendacao_nicho']}")
-        st.info(f"⏰ **Horário ideal:** {previsoes['melhor_horario']}")
-        st.success(f"🖼️ **Thumb vencedor:** {previsoes['thumb_vencedor_tipo']}")
-    
-    # Gráfico de tendência
-    datas = pd.date_range(start='2025-11-01', periods=30, freq='D')
-    views_simuladas = np.cumsum(np.random.randint(200, 1200, 30))
-    
-    fig_trend = go.Figure()
-    fig_trend.add_trace(go.Scatter(x=datas, y=views_simuladas,
-                                  mode='lines+markers',
-                                  name='Views Diárias',
-                                  line=dict(color='#FF6B6B', width=3)))
-    fig_trend.update_layout(title="📈 Tendência de Crescimento",
-                           xaxis_title="Data", yaxis_title="Visualizações")
-    st.plotly_chart(fig_trend, use_container_width=True)
+    st.markdown("### 📋 Tabela de vídeos")
+    st.dataframe(
+        df[["Título", "Publicado?", "Privacidade", "Data publicação", "URL YouTube"]],
+        use_container_width=True,
+        height=260,
+    )
 
-# Histórico pipeline
-st.header("🚀 Status Pipeline Completa")
-st.markdown("""
-| Etapa | Status | Tempo | Métricas |
-|-------|--------|-------|----------|
-| 1️⃣ Roteiro | ✅ Concluído | 2min | 12 gerados |
-| 2️⃣ Thumbnail | ✅ Concluído | 1min | 24 A/B tests |
-| 3️⃣ Áudio | ✅ Concluído | 3min | 8 arquivos |
-| 4️⃣ Vídeo | ✅ Concluído | 5min | 6 vídeos |
-| 5️⃣ Publicar | ✅ Concluído | 8min | 6 uploads |
-| **TOTAL** | **🎉 100%** | **19min** | **R$0** |
-""")
+    st.markdown("---")
+    st.subheader("📈 Espaço para métricas manuais (views, CTR, watch time)")
 
-# Recomendações finais
-st.header("💡 Próximos Passos Automatizados")
-recomendacoes = [
-    "🚀 Publicar 2 vídeos/semana no horário 18h-20h",
-    "📈 Testar thumbnails emocionais (melhor CTR +23%)",
-    "🎯 Focar nicho 'Finanças Pessoais' (alta monetização)",
-    "🔄 Automatizar próxima leva com 1-click"
-]
+    st.caption(
+        "Por enquanto, este dashboard usa apenas dados manuais. "
+        "Você pode copiar números do YouTube Studio e registrar abaixo; "
+        "depois isso pode ser automatizado via YouTube Analytics API."
+    )
 
-for rec in recomendacoes:
-    st.success(rec)
+    # Formulário para atualizar métricas manuais de um vídeo específico
+    vids_ids = df["video_id"].tolist()
+    vids_titulos = df["Título"].tolist()
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        idx_ed = st.selectbox(
+            "Escolha o vídeo para atualizar métricas manuais",
+            options=range(len(vids_ids)),
+            format_func=lambda i: vids_titulos[i],
+        )
+        vid_sel = vids_ids[idx_ed]
+        v_obj = canal["videos"][vid_sel]
+        pub_info = v_obj["artefatos"].get("publicacao_info", {})
 
-st.markdown("---")
-st.caption("🔥 Dashboard IA completo | YouTube Analytics API | Pipeline Industrial ✅")
+    with col_f2:
+        views_manual = st.number_input(
+            "Views (manual, do YouTube Studio)",
+            min_value=0,
+            value=int(pub_info.get("manual_views", 0) or 0),
+        )
+        ctr_manual = st.number_input(
+            "CTR (%) manual",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(pub_info.get("manual_ctr", 0.0) or 0.0),
+            step=0.1,
+        )
+        wt_manual = st.number_input(
+            "Watch time (minutos, manual)",
+            min_value=0.0,
+            value=float(pub_info.get("manual_watch_time", 0.0) or 0.0),
+            step=1.0,
+        )
 
+    if st.button("💾 Salvar métricas manuais"):
+        if "publicacao_info" not in v_obj["artefatos"]:
+            v_obj["artefatos"]["publicacao_info"] = {}
+        v_obj["artefatos"]["publicacao_info"].update(
+            {
+                "manual_views": views_manual,
+                "manual_ctr": ctr_manual,
+                "manual_watch_time": wt_manual,
+                "manual_atualizado_em": datetime.now().isoformat(),
+            }
+        )
+        v_obj["ultima_atualizacao"] = datetime.now().isoformat()
+        st.success("Métricas manuais salvas para este vídeo.")
+        st.experimental_rerun()
+
+    st.markdown("---")
+    st.caption(
+        "No futuro, esta aba poderá puxar métricas automaticamente da "
+        "YouTube Analytics API (views, watch time, CTR, etc.) e gerar gráficos "
+        "mais avançados. Por enquanto, serve como diário de resultados."
+    )
+
+# -------------------------------------------------------------------
+# Modo 2 – Detalhe de um vídeo
+# -------------------------------------------------------------------
+else:
+    if not video_id or video_id not in videos:
+        st.warning("Selecione um vídeo na barra lateral.")
+        st.stop()
+
+    v = videos[video_id]
+    pub_info = v["artefatos"].get("publicacao_info", {})
+    youtube_url = v["artefatos"].get("youtube_url")
+
+    st.subheader("🎬 Detalhes do vídeo")
+
+    col_v1, col_v2 = st.columns([2, 1])
+    with col_v1:
+        st.markdown(f"### {v.get('titulo','(sem título)')}")
+        st.caption(v.get("descricao", ""))
+
+        if youtube_url:
+            st.markdown(f"[🔗 Abrir no YouTube]({youtube_url})")
+        else:
+            st.caption("Nenhum link de YouTube registrado ainda.")
+
+    with col_v2:
+        st.metric(
+            "Publicado?",
+            "Sim ✅" if v["status"].get("5_publicacao") else "Não",
+        )
+        st.metric(
+            "Canal pronto?",
+            "Sim ✅" if v["status"].get("0_canal") else "Não",
+        )
+
+    st.markdown("---")
+
+    # Linha do tempo das etapas
+    st.subheader("🧩 Linha do tempo das etapas")
+
+    etapas = [
+        ("0_canal", "Canal pronto"),
+        ("1_roteiro", "Roteiro"),
+        ("2_thumbnail", "Thumbnails"),
+        ("3_audio", "Áudio"),
+        ("4_video", "Vídeo final"),
+        ("5_publicacao", "Publicação"),
+        ("6_dashboard", "Dashboard"),
+    ]
+
+    cols = st.columns(len(etapas))
+    for (key, nome), c in zip(etapas, cols):
+        with c:
+            status = v["status"].get(key, False)
+            icone = "✅" if status else "⭕"
+            st.markdown(f"{icone}\n\n{nome}")
+
+    st.markdown("---")
+
+    # Métricas manuais específicas
+    st.subheader("📈 Métricas manuais (preenchidas a partir do YouTube Studio)")
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric("Views (manual)", int(pub_info.get("manual_views", 0) or 0))
+    with col_m2:
+        st.metric("CTR (%) manual", f"{float(pub_info.get('manual_ctr', 0.0) or 0.0):.1f}%")
+    with col_m3:
+        st.metric(
+            "Watch time (min)",
+            int(float(pub_info.get("manual_watch_time", 0.0) or 0.0)),
+        )
+
+    if pub_info.get("manual_atualizado_em"):
+        st.caption(f"Última atualização manual: {pub_info['manual_atualizado_em'][:16]}")
+
+    st.markdown("---")
+
+    st.caption(
+        "Por enquanto, este dashboard é baseado em dados manuais e no status interno do pipeline. "
+        "Posteriormente, pode ser integrado à YouTube Analytics API para buscar métricas em tempo real."
+    )
