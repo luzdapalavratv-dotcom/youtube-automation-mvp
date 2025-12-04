@@ -1,6 +1,7 @@
 import streamlit as st
 import asyncio
 import edge_tts
+import subprocess
 import os
 from datetime import datetime
 
@@ -47,7 +48,7 @@ if "audio_info" not in video["artefatos"]:
 roteiro = video["artefatos"].get("roteiro")
 
 # -------------------------------------------------------------------
-# Sidebar – voz e configurações
+# Sidebar – motor de voz, voz e configurações
 # -------------------------------------------------------------------
 with st.sidebar:
     st.header("📺 Contexto")
@@ -55,43 +56,59 @@ with st.sidebar:
     st.markdown(f"**Vídeo:** {video.get('titulo','')}")
 
     st.markdown("---")
-    st.header("🗣 Voz TTS (Edge-TTS)")
+    st.header("🎛 Motor de voz")
 
-    vozes = {
-        "🇺🇸 English (US) – Female": "en-US-JennyNeural",
-        "🇺🇸 English (US) – Male": "en-US-GuyNeural",
-        "🇧🇷 Português (BR) – Female": "pt-BR-FranciscaNeural",
-        "🇧🇷 Português (BR) – Male": "pt-BR-AntonioNeural",
-        "🇪🇸 Español (ES) – Female": "es-ES-ElviraNeural",
-        "🇪🇸 Español (MX) – Female": "es-MX-DaliaNeural",
-    }
-    voz_label = st.selectbox("Voz", list(vozes.keys()), index=2)
-    voz_code = vozes[voz_label]
-
-    velocidade = st.slider("Velocidade (rate)", 0.5, 1.5, 1.0, 0.1)
-    pitch = st.slider("Pitch (tom) – desativado no momento", -10, 10, 0)
-    volume = st.slider("Volume (dB) – desativado no momento", -10, 10, 0)
-
-    st.caption(
-        "Edge-TTS usa as vozes neurais da Microsoft (alta qualidade, gratuito). "
-        "Ajuste de pitch/volume via SSML pode falhar em alguns ambientes, por isso "
-        "esta versão usa apenas controle de velocidade (rate)."  # [web:184][web:185]
+    motor = st.selectbox(
+        "Motor TTS",
+        ["Edge-TTS (online)", "Piper TTS (local)"],
+        index=0,
+        help="Edge usa o serviço online da Microsoft; Piper é TTS local via binário `piper`.",
     )
 
+    if motor == "Edge-TTS (online)":
+        st.markdown("**Voz TTS (Edge-TTS)**")
+
+        vozes_edge = {
+            "🇺🇸 English (US) – Female": "en-US-JennyNeural",
+            "🇺🇸 English (US) – Male": "en-US-GuyNeural",
+            "🇧🇷 Português (BR) – Female": "pt-BR-FranciscaNeural",
+            "🇧🇷 Português (BR) – Male": "pt-BR-AntonioNeural",
+            "🇪🇸 Español (ES) – Female": "es-ES-ElviraNeural",
+            "🇪🇸 Español (MX) – Female": "es-MX-DaliaNeural",
+        }
+        voz_label = st.selectbox("Voz", list(vozes_edge.keys()), index=2)
+        voz_code = vozes_edge[voz_label]
+
+        velocidade = st.slider("Velocidade (rate)", 0.5, 1.5, 1.0, 0.1)
+        st.caption(
+            "Edge-TTS usa as vozes neurais da Microsoft. "
+            "Aqui está sendo usado apenas o controle de velocidade (rate) para maior estabilidade."  # [web:184][web:185]
+        )
+
+    else:
+        st.markdown("**Modelo Piper TTS (local)**")
+        modelo_piper = st.text_input(
+            "Caminho do modelo .onnx",
+            value=os.environ.get("PIPER_MODEL_PATH", "pt_BR-fernanda-medium.onnx"),
+            help="Ex.: /usr/share/piper/pt_BR-fernanda-medium.onnx",
+        )
+        voz_label = f"Piper – {os.path.basename(modelo_piper)}"
+        voz_code = modelo_piper  # aqui representa o modelo
+        velocidade = 1.0  # Piper não usa este controle diretamente
+
+        st.caption(
+            "Piper é um TTS neural local. Certifique-se de ter o binário `piper` "
+            "instalado no servidor e o caminho do modelo correto."  # [web:223][web:229]
+        )
+
 # -------------------------------------------------------------------
-# Funções TTS (Edge-TTS) – assíncrono
+# Funções TTS – Edge
 # -------------------------------------------------------------------
 async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: float) -> None:
-    """
-    Gera áudio com Edge-TTS.
-    Usa apenas 'rate' (velocidade) para reduzir risco de erro 'No audio received'. [web:184]
-    """
-    # Garante texto não vazio
     texto = (texto or "").strip()
     if not texto:
-        raise ValueError("Texto vazio para TTS.")
+        raise ValueError("Texto vazio para TTS (Edge).")
 
-    # Limita variação de velocidade para faixa segura
     rate_percent = max(-50, min(50, int((rate - 1.0) * 100)))
     rate_str = f"{rate_percent:+d}%"
 
@@ -107,8 +124,7 @@ async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: flo
     await communicate.save(output_path)
 
 
-def run_tts_sync(texto: str, voz: str, rate: float) -> str | None:
-    """Executa Edge-TTS em loop isolado e retorna caminho do arquivo MP3."""
+def run_tts_edge(texto: str, voz: str, rate: float) -> str | None:
     import tempfile
 
     texto = (texto or "").strip()
@@ -116,7 +132,6 @@ def run_tts_sync(texto: str, voz: str, rate: float) -> str | None:
         st.error("Texto vazio para TTS.")
         return None
 
-    # Evita textos gigantes que podem falhar na API
     if len(texto) > 8000:
         texto = texto[:8000]
 
@@ -130,10 +145,69 @@ def run_tts_sync(texto: str, voz: str, rate: float) -> str | None:
         loop.run_until_complete(gerar_audio_edge_tts(texto, voz, output_path, rate))
         return output_path
     except Exception as e:
-        st.error(f"Erro ao gerar áudio TTS: {e}")
+        st.error(f"Erro ao gerar áudio com Edge-TTS: {e}")
         return None
     finally:
         loop.close()
+
+# -------------------------------------------------------------------
+# Funções TTS – Piper (via CLI)
+# -------------------------------------------------------------------
+def piper_disponivel() -> bool:
+    """Verifica se o comando `piper` está disponível no PATH."""  # [web:223][web:234]
+    from shutil import which
+    return which("piper") is not None
+
+
+def run_tts_piper(texto: str, modelo_onnx: str) -> str | None:
+    """
+    Gera áudio usando Piper TTS via linha de comando.
+    Saída é um arquivo WAV; em seguida renomeado para .wav (player aceita).
+    """  # [web:223][web:224]
+    import tempfile
+
+    texto = (texto or "").strip()
+    if not texto:
+        st.error("Texto vazio para TTS.")
+        return None
+
+    if not piper_disponivel():
+        st.error("O comando `piper` não foi encontrado no sistema. Instale Piper e tente novamente.")
+        return None
+
+    if not os.path.exists(modelo_onnx):
+        st.error(f"Modelo Piper não encontrado: {modelo_onnx}")
+        return None
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        output_path = tmp.name
+
+    cmd = [
+        "piper",
+        "-m",
+        modelo_onnx,
+        "-f",
+        output_path,
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=texto.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            st.error("Erro ao executar Piper TTS.")
+            st.code(proc.stderr.decode("utf-8")[-2000:], language="bash")
+            return None
+        return output_path
+    except FileNotFoundError:
+        st.error("Comando `piper` não encontrado (FileNotFoundError).")
+        return None
+    except Exception as e:
+        st.error(f"Erro ao gerar áudio com Piper TTS: {e}")
+        return None
 
 # -------------------------------------------------------------------
 # Conteúdo base para leitura
@@ -177,16 +251,19 @@ with col_g1:
         if not texto_limpo:
             st.warning("Texto vazio. Preencha antes de gerar.")
         else:
-            with st.spinner("Gerando áudio com Edge-TTS..."):
-                audio_path = run_tts_sync(texto_limpo, voz_code, velocidade)
+            with st.spinner(f"Gerando áudio com {motor}..."):
+                if motor == "Edge-TTS (online)":
+                    audio_path = run_tts_edge(texto_limpo, voz_code, velocidade)
+                else:
+                    audio_path = run_tts_piper(texto_limpo, voz_code)
+
                 if audio_path and os.path.exists(audio_path):
                     video["artefatos"]["audio_path"] = audio_path
                     video["artefatos"]["audio_info"] = {
+                        "motor": motor,
                         "voz": voz_label,
                         "voz_code": voz_code,
-                        "velocidade": velocidade,
-                        "pitch": 0,
-                        "volume": 0,
+                        "velocidade": velocidade if motor.startswith("Edge") else 1.0,
                         "gerado_em": datetime.now().isoformat(),
                         "texto_usado": texto_limpo[:5000],
                     }
@@ -211,21 +288,25 @@ st.subheader("🎧 Player do áudio gerado")
 audio_path_salvo = video["artefatos"].get("audio_path")
 
 if audio_path_salvo and os.path.exists(audio_path_salvo):
-    st.audio(audio_path_salvo, format="audio/mpeg")
+    # Edge gerou MP3; Piper gerou WAV. Streamlit detecta automaticamente. [web:143]
+    st.audio(audio_path_salvo)
 
     col_d1, col_d2 = st.columns(2)
     with col_d1:
+        ext = ".mp3" if audio_path_salvo.lower().endswith(".mp3") else ".wav"
+        mime = "audio/mpeg" if ext == ".mp3" else "audio/wav"
         with open(audio_path_salvo, "rb") as f:
             st.download_button(
-                "💾 Baixar MP3",
+                "💾 Baixar áudio",
                 data=f.read(),
-                file_name=f"audio_{video.get('titulo','video')[:20]}.mp3",
-                mime="audio/mpeg",
+                file_name=f"audio_{video.get('titulo','video')[:20]}{ext}",
+                mime=mime,
             )
     with col_d2:
         info = video["artefatos"].get("audio_info", {})
         st.markdown("**Configurações usadas:**")
         st.caption(
+            f"Motor: {info.get('motor','-')}  \n"
             f"Voz: {info.get('voz','-')}  \n"
             f"Velocidade: {info.get('velocidade','-')}x"
         )
