@@ -32,10 +32,10 @@ def get_youtube_service():
     )
     return youtube
 
-youtube = get_youtube_service()  # [web:20]
+youtube = get_youtube_service()
 
 def extrair_channel_id(url: str):
-    """Tenta extrair/resolver um channelId a partir de vários formatos de URL, usando forHandle quando possível."""  # [web:119][web:124][web:126]
+    """Extrai/resolve um channelId a partir de vários formatos de URL, usando forHandle quando possível."""
     url = url.strip()
     if not url:
         return None
@@ -112,7 +112,7 @@ def extrair_channel_id(url: str):
 
 @st.cache_data(ttl=3600)
 def analisar_canal_youtube(channel_id: str, top_n: int = 50):
-    """Analisa canal via YouTube Data API: top vídeos, padrões de título etc."""  # [web:20]
+    """Analisa canal via YouTube Data API: top vídeos, padrões de título etc."""
     try:
         ch_req = youtube.channels().list(
             part="snippet,statistics",
@@ -144,9 +144,7 @@ def analisar_canal_youtube(channel_id: str, top_n: int = 50):
                 id=",".join(ids),
             )
             stats_res = stats_req.execute()
-            stats_map = {
-                it["id"]: it for it in stats_res.get("items", [])
-            }
+            stats_map = {it["id"]: it for it in stats_res.get("items", [])}
 
         for v in vids_raw:
             vid = v["id"]["videoId"]
@@ -156,7 +154,7 @@ def analisar_canal_youtube(channel_id: str, top_n: int = 50):
             cont = stt_item.get("contentDetails", {})
 
             dur = cont.get("duration", "")
-            # Identificar Shorts de forma simples: duração <= 60s OU título contém #shorts
+            # Shorts: duração <= ~60s OU #shorts no título (heurística)
             is_short = False
             if "S" in dur and "M" not in dur and "H" not in dur:
                 is_short = True
@@ -397,14 +395,19 @@ with tab2:
                 top10_long = df_long.head(10).copy()
                 top10_long["link_video"] = (
                     "https://www.youtube.com/watch?v=" + top10_long["video_id"]
-                )  # [web:105]
-                top10_long["▶️"] = top10_long["link_video"].apply(
-                    lambda url: f"[▶️]({url})"
                 )
+
+                # Tabela numérica
                 st.dataframe(
-                    top10_long[["▶️", "titulo", "views", "likes", "comments", "ctr_simulado"]],
+                    top10_long[["titulo", "views", "likes", "comments", "ctr_simulado"]],
                     use_container_width=True,
                 )
+
+                # Lista de links clicáveis
+                st.markdown("**Links dos vídeos longos:**")
+                for _, row in top10_long.iterrows():
+                    url = row["link_video"]
+                    st.markdown(f"- [▶️ {row['titulo']}]({url})")
 
             # ---------- SHORTS ----------
             st.subheader("📱 Top 10 Shorts por views")
@@ -416,13 +419,18 @@ with tab2:
                 top10_short["link_video"] = (
                     "https://www.youtube.com/watch?v=" + top10_short["video_id"]
                 )
-                top10_short["▶️"] = top10_short["link_video"].apply(
-                    lambda url: f"[▶️]({url})"
-                )
+
                 st.dataframe(
-                    top10_short[["▶️", "titulo", "views", "likes", "comments", "ctr_simulado"]],
+                    top10_short[
+                        ["titulo", "views", "likes", "comments", "ctr_simulado"]
+                    ],
                     use_container_width=True,
                 )
+
+                st.markdown("**Links dos Shorts:**")
+                for _, row in top10_short.iterrows():
+                    url = row["link_video"]
+                    st.markdown(f"- [▶️ {row['titulo']}]({url})")
 
             # Padrões de títulos (usando todos os vídeos analisados)
             st.subheader("🧠 Padrões de títulos (todos os vídeos analisados)")
@@ -448,7 +456,11 @@ with tab2:
                 st.metric("Títulos com emoji", f"{emojis/n*100:.0f}%")
                 st.metric("Ocorrências de gatilhos", palavras_trigger)
 
-            melhor_titulo = df_long.head(1)["titulo"].iloc[0] if not df_long.empty else df_v.head(1)["titulo"].iloc[0]
+            melhor_titulo = (
+                df_long.head(1)["titulo"].iloc[0]
+                if not df_long.empty
+                else df_v.head(1)["titulo"].iloc[0]
+            )
             st.success(
                 f"Modelo forte de título detectado, exemplo: `{melhor_titulo[:80]}...`"
             )
