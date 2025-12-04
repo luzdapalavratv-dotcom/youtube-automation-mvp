@@ -73,7 +73,7 @@ with st.sidebar:
     pitch = st.slider("Pitch (tom)", -10, 10, 0)
     volume = st.slider("Volume (dB)", -10, 10, 0)
 
-    st.caption("Edge-TTS usa as vozes neurais da Microsoft (alta qualidade, gratuito).")
+    st.caption("Edge-TTS usa as vozes neurais da Microsoft (alta qualidade, gratuito).")  # [web:184][web:185]
 
 # -------------------------------------------------------------------
 # Funções TTS (Edge-TTS) – assíncrono
@@ -82,9 +82,9 @@ async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: flo
     """
     Gera áudio com Edge-TTS.
     Rate: multiplicador de velocidade (1.0 = normal).
-    Pitch/volume: ajustados em SSML.
-    """
-    # Edge-TTS aceita rate/volume/pitch como strings, vamos converter:
+    Pitch/volume: ajustados via SSML simples.
+    """  # [web:184]
+
     rate_percent = int((rate - 1.0) * 100)  # ex.: 1.1 -> +10%
     rate_str = f"{rate_percent:+d}%"
     pitch_str = f"{pitch:+d}Hz"
@@ -98,7 +98,8 @@ async def gerar_audio_edge_tts(texto: str, voz: str, output_path: str, rate: flo
 </speak>
 """.strip()
 
-    communicate = edge_tts.Communicate(ssml, voz, ssml=True)
+    # A biblioteca aceita o texto SSML direto, sem parâmetro 'ssml' [web:184]
+    communicate = edge_tts.Communicate(ssml, voz)
     await communicate.save(output_path)
 
 
